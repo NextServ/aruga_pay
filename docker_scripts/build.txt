@@ -1,0 +1,134 @@
+# Prerequisites
+Git, Docker and Docker Compose installed
+
+# How to use - for consumers
+1. git clone
+2. run docker compose -f compose/compose.local.yaml
+3. run docker compose exec backend bench new-site localhost --mariadb-user-host-login-scope='172.%.%.%'
+4. MySQL root password is: frappe
+5. Set administrator/site password
+6. docker compose exec backend bench --site localhost install-app erpnext
+7. Go to localhost:8080
+
+
+# How this works - for developers
+This contains the two ways to use Frappe Framework in Docker;
+1. Docker compose using the templates created here. By generating the proper docker compose file and using it via docker compose -f compose.yaml up. This should contain Frappe Framework and ERPNext by default.
+2. Generate a local image, integrate your own apps then generating the proper docker compose file. This will contain Frappe Framework and the apps you set in apps.json.
+
+# SOURCE GUIDE:
+https://github.com/frappe/frappe_docker/
+
+===
+# BUILD IMAGE COMMANDs
+
+docker build --build-arg=FRAPPE_PATH=https://github.com/frappe/frappe --build-arg=FRAPPE_BRANCH=version-15 --build-arg=APPS_JSON_BASE64=$APPS_JSON_BASE64 --tag=testing/layered:15 --file=Dockerfile .
+docker build --build-arg=FRAPPE_PATH=https://github.com/frappe/frappe --build-arg=FRAPPE_BRANCH=version-14 --build-arg=APPS_JSON_BASE64=$APPS_JSON_BASE64 --tag=testing/layered:14 --file=Dockerfile .
+
+# Set apps.json and add it to your variables. You are not supposed to touch the Dockerfile.
+export APPS_JSON_BASE64=$(base64 -w 0 apps.json)
+or
+APPS_JSON_BASE64=$(base64 -w 0 apps.json)
+
+# To import private repo apps
+{
+    "url": "https://<GITHUB_USERNAME>:<GITHUB_TOKEN>@github.com/NextServ/schoolext",
+    "branch": "develop"
+}
+===
+# Generate compose file:
+docker compose --env-file .env -f compose.yaml  -f overrides/compose.mariadb.yaml -f overrides/compose.redis.yaml -f overrides/compose.noproxy.yaml config > compose.custom.yaml
+
+===
+# DOCKER COMMANDS 
+
+# Create site FOR compose.local.yaml - it must be localhost then access in localhost:8080
+# You can create test.local but you must add it in your hosts file. 127.0.0.1 test.local
+docker compose exec backend bench new-site localhost --mariadb-user-host-login-scope='172.%.%.%'
+docker compose exec backend bench --site localhost install-app erpnext
+
+# Create site
+docker compose exec backend bench new-site test.local --mariadb-user-host-login-scope='172.%.%.%'
+docker compose exec backend bench --site test.local install-app erpnext
+
+# Copy file/folder from local to container
+docker compose cp db.sql backend:home/frappe/frappe-bench
+
+# Copy file/folder from container to local
+docker compose cp backend:home/frappe/frappe-bench/sites/common_site_config.json .
+
+# Copy logs
+docker compose -f pwd.yml cp backend:/home/frappe/frappe-bench/logs/ ./debug-logs/
+
+# Copy site files
+docker compose -f pwd.yml cp backend:/home/frappe/frappe-bench/sites/mysite.com ./backup/
+
+
+===
+# DOCKER COMPOSE TEMPALTES
+# Goal - Use These Overrides to generate a docker compose file
+Automated Backups - Add compose.backup-cron.yaml to any stack
+Use PostgreSQL - Replace mariadb with compose.postgres.yaml
+
+# .env
+
+# Edit these variables to use the custom image you generated
+CUSTOM_IMAGE=testing/layered
+CUSTOM_TAG=15
+# Add this variable to use your local image. This basically says pull only if missing.
+PULL_POLICY=missing
+
+# Local Dev
+
+Local Development (Docker Desktop) - port based, http, for development and cron
+docker compose --env-file .env -f compose.yaml -f overrides/compose.mariadb.yaml -f overrides/compose.redis.yaml -f overrides/compose.noproxy.yaml -f overrides/compose.backup-cron.yaml config > compose/compose.local.yaml
+
+Local Development (Docker Desktop) - unsecure proxy, http, for development and cron - add to hosts file
+docker compose --env-file .env -f compose.yaml -f overrides/compose.mariadb.yaml -f overrides/compose.redis.yaml -f overrides/compose.proxy.yaml -f overrides/compose.backup-cron.yaml config > compose/compose.local_proxy.yaml
+
+Local Development (Docker Desktop) - secure proxy, http, for dev/prod and cron - add to hosts file
+docker compose --env-file .env -f compose.yaml -f overrides/compose.redis.yaml -f overrides/compose.multi-bench.yaml -f overrides/compose.mariadb-shared.yaml -f overrides/compose.traefik.yaml -f overrides/compose.backup-cron.yaml config > compose/compose.local_multi_proxy.yaml
+
+# Production / HTTPS / SSL
+
+Production (Single Site + SSL) 
+docker compose --env-file .env -f compose.yaml -f overrides/compose.mariadb.yaml -f overrides/compose.redis.yaml -f overrides/compose.https.yaml -f overrides/compose.backup-cron.yaml config > compose/compose.https.yaml
+
+Production (Multiple Sites + SSL) - compose.mariadb.yaml + compose.redis.yaml + compose.traefik.yaml + compose.traefik-ssl.yaml + compose.multi-bench-ssl.yaml
+
+# Shared apps
+
+Local Development (Docker Desktop) - port based, http, for development and cron - apps has own volume
+docker compose --env-file .env -f compose_shared_apps.yaml -f overrides/compose.mariadb.yaml -f overrides/compose.redis.yaml -f overrides/compose.noproxy.yaml -f overrides/compose.backup-cron.yaml config > compose/compose.shared_local.yaml
+
+===
+Override File - Purpose - When to Use - Key Services / Changes
+compose.backup-cron.yaml - Automated backups using frappe/backup image - You want daily DB + files backups - backup-cron service, cron schedule, S3/minio upload
+
+compose.custom-domain-ssl.yaml - SSL for custom domain (Let’s Encrypt) + Traefik - Production with erp.example.com + HTTPS - traefik + cert-resolver, FRAPPE_SITE_NAME, LETSENCRYPT_EMAIL
+
+compose.custom-domain.yaml - Custom domain without SSL (HTTP only) - Dev/test with erp.local - Sets VIRTUAL_HOST, FRAPPE_SITE_NAME
+
+compose.https.yaml - Force HTTPS redirect (via Traefik) - Any site using Traefik + SSL - Adds traefik.http.routers.*.entrypoints=websecure, redirect middleware
+
+compose.mariadb-secrets.yaml - MariaDB credentials via Docker secrets - Production (swarm/secrets) - mariadb uses /run/secrets/db_root_password
+
+compose.mariadb-shared.yaml - Shared MariaDB for multiple benches - Multi-tenant / multi-site on same DB - mariadb with shared socket, multiple frappe-python connect
+
+compose.mariadb.yaml - Add MariaDB service - You don’t use external DB - mariadb:10.6, UTF8MB4, root password via .env
+
+compose.multi-bench-ssl.yaml - Multiple Frappe sites (benches) + SSL - Run site1.com, site2.com behind one proxy - Multiple frappe-web + Traefik labels per domain
+
+compose.multi-bench.yaml - Multiple Frappe benches (no SSL) - Dev: run 2+ sites on same host - Multiple frappe-python-*, shared Redis/MariaDB
+
+compose.noproxy.yaml - Disable Traefik, expose ports directly - Local dev, Docker Desktop, no reverse proxy - Removes traefik, maps 8000:8000, 9000:9000
+
+compose.postgres.yaml - Use PostgreSQL instead of MariaDB - You prefer Postgres - postgres:15, POSTGRES_PASSWORD, DB_HOST=postgres
+
+compose.proxy.yaml - Enable Traefik (HTTP only) - Reverse proxy, multiple sites, no SSL - traefik with web entrypoint, VIRTUAL_HOST
+
+compose.redis.yaml - Add Redis (queue, cache, socketio) - Required for background jobs, real-time - redis-queue, redis-cache, redis-socketio
+
+compose.traefik-ssl.yaml - Traefik + Automatic Let’s Encrypt SSL - Production HTTPS - traefik, websecure, certificatesresolvers, LETSENCRYPT_EMAIL
+
+compose.traefik.yaml - Base Traefik reverse proxy - Foundation for all proxy overrides - traefik image, dashboard, web entrypoint

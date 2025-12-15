@@ -1,0 +1,312 @@
+name: docker_scripts
+services:
+  backend:
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+        required: true
+    image: frappe/erpnext:v15.87.0
+    networks:
+      bench-network: null
+      mariadb-network: null
+    platform: linux/amd64
+    pull_policy: always
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: sites
+        target: /home/frappe/frappe-bench/sites
+        volume: {}
+  configurator:
+    command:
+      - |
+        ls -1 apps > sites/apps.txt; bench set-config -g db_host $$DB_HOST; bench set-config -gp db_port $$DB_PORT; bench set-config -g redis_cache "redis://$$REDIS_CACHE"; bench set-config -g redis_queue "redis://$$REDIS_QUEUE"; bench set-config -g redis_socketio "redis://$$REDIS_QUEUE"; bench set-config -gp socketio_port $$SOCKETIO_PORT;
+    depends_on:
+      database:
+        condition: service_healthy
+        required: true
+      redis-cache:
+        condition: service_started
+        required: true
+      redis-queue:
+        condition: service_started
+        required: true
+    entrypoint:
+      - bash
+      - -c
+    environment:
+      DB_HOST: database
+      DB_PORT: "3306"
+      REDIS_CACHE: redis-cache:6379
+      REDIS_QUEUE: redis-queue:6379
+      SOCKETIO_PORT: "9000"
+    image: frappe/erpnext:v15.87.0
+    networks:
+      bench-network: null
+      mariadb-network: null
+    platform: linux/amd64
+    pull_policy: always
+    restart: on-failure
+    volumes:
+      - type: volume
+        source: sites
+        target: /home/frappe/frappe-bench/sites
+        volume: {}
+  cron:
+    command:
+      - daemon
+      - --docker
+    depends_on:
+      scheduler:
+        condition: service_started
+        required: true
+    image: mcuadros/ofelia:latest
+    networks:
+      default: null
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        read_only: true
+        bind:
+          create_host_path: true
+  database:
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
+      - --skip-innodb-read-only-compressed
+      - --max-allowed-packet=256M # Enable big restores
+    container_name: mariadb-database
+    environment:
+      MARIADB_AUTO_UPGRADE: "1"
+      MYSQL_ROOT_PASSWORD: frappe
+    healthcheck:
+      test:
+        - CMD
+        - healthcheck.sh
+        - --connect
+        - --innodb_initialized
+      timeout: 5s
+      interval: 5s
+      retries: 5
+      start_period: 5s
+    image: mariadb:11.8
+    networks:
+      mariadb-network: null
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: db-data
+        target: /var/lib/mysql
+        volume: {}
+  frontend:
+    command:
+      - nginx-entrypoint.sh
+    depends_on:
+      backend:
+        condition: service_started
+        required: true
+      websocket:
+        condition: service_started
+        required: true
+    environment:
+      BACKEND: backend:8000
+      CLIENT_MAX_BODY_SIZE: 50m
+      FRAPPE_SITE_NAME_HEADER: $$host
+      PROXY_READ_TIMEOUT: "120"
+      SOCKETIO: websocket:9000
+      UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
+      UPSTREAM_REAL_IP_HEADER: X-Forwarded-For
+      UPSTREAM_REAL_IP_RECURSIVE: "off"
+    image: frappe/erpnext:v15.87.0
+    labels:
+      traefik.docker.network: traefik-public
+      traefik.enable: "true"
+      traefik.http.routers.backend-http.entrypoints: http
+      traefik.http.routers.backend-http.rule: Host(`test.local`, `test2.local`)
+      traefik.http.routers.backend-http.service: backend
+      traefik.http.services.backend.loadbalancer.server.port: "8080"
+    networks:
+      bench-network: null
+      traefik-public: null
+    platform: linux/amd64
+    pull_policy: always
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: sites
+        target: /home/frappe/frappe-bench/sites
+        volume: {}
+  queue-long:
+    command:
+      - bench
+      - worker
+      - --queue
+      - long,default,short
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+        required: true
+    image: frappe/erpnext:v15.87.0
+    networks:
+      bench-network: null
+      mariadb-network: null
+    platform: linux/amd64
+    pull_policy: always
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: sites
+        target: /home/frappe/frappe-bench/sites
+        volume: {}
+  queue-short:
+    command:
+      - bench
+      - worker
+      - --queue
+      - short,default
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+        required: true
+    image: frappe/erpnext:v15.87.0
+    networks:
+      bench-network: null
+      mariadb-network: null
+    platform: linux/amd64
+    pull_policy: always
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: sites
+        target: /home/frappe/frappe-bench/sites
+        volume: {}
+  redis-cache:
+    image: redis:6.2-alpine
+    networks:
+      bench-network: null
+      mariadb-network: null
+    restart: unless-stopped
+  redis-queue:
+    image: redis:6.2-alpine
+    networks:
+      bench-network: null
+      mariadb-network: null
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: redis-queue-data
+        target: /data
+        volume: {}
+  scheduler:
+    command:
+      - bench
+      - schedule
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+        required: true
+    image: frappe/erpnext:v15.87.0
+    labels:
+      ofelia.enabled: "true"
+      ofelia.job-exec.datecron.command: bench --site all backup
+      ofelia.job-exec.datecron.schedule: '@every 6h'
+      ofelia.job-exec.datecron.user: frappe
+    networks:
+      bench-network: null
+      mariadb-network: null
+    platform: linux/amd64
+    pull_policy: always
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: sites
+        target: /home/frappe/frappe-bench/sites
+        volume: {}
+  traefik:
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.http.address=:80
+      - --accesslog
+      - --log
+      - --api
+    image: traefik:v2.11
+    labels:
+      traefik.docker.network: traefik-public
+      traefik.enable: "true"
+      traefik.http.middlewares.admin-auth.basicauth.users: admin:098f6bcd4621d373cade4e832627b4f6
+      traefik.http.routers.traefik-public-http.entrypoints: http
+      traefik.http.routers.traefik-public-http.middlewares: admin-auth
+      traefik.http.routers.traefik-public-http.rule: Host(`localhost`)
+      traefik.http.routers.traefik-public-http.service: api@internal
+      traefik.http.services.traefik-public.loadbalancer.server.port: "8080"
+    networks:
+      traefik-public: null
+    ports:
+      - mode: ingress
+        target: 80
+        published: "80"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        read_only: true
+        bind:
+          create_host_path: true
+  websocket:
+    command:
+      - node
+      - /home/frappe/frappe-bench/apps/frappe/socketio.js
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+        required: true
+    image: frappe/erpnext:v15.87.0
+    networks:
+      bench-network: null
+      mariadb-network: null
+    platform: linux/amd64
+    pull_policy: always
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: sites
+        target: /home/frappe/frappe-bench/sites
+        volume: {}
+networks:
+  bench-network:
+    name: backend
+  default:
+    name: docker_scripts_default
+  mariadb-network:
+    name: mariadb-network
+  traefik-public:
+    name: traefik-public
+volumes:
+  db-data:
+    name: docker_scripts_db-data
+  redis-queue-data:
+    name: docker_scripts_redis-queue-data
+  sites:
+    name: docker_scripts_sites
+x-backend-defaults:
+  depends_on:
+    configurator:
+      condition: service_completed_successfully
+  image: frappe/erpnext:v15.87.0
+  pull_policy: always
+  restart: unless-stopped
+  volumes:
+    - sites:/home/frappe/frappe-bench/sites
+x-customizable-image:
+  image: frappe/erpnext:v15.87.0
+  pull_policy: always
+  restart: unless-stopped
+x-depends-on-configurator:
+  depends_on:
+    configurator:
+      condition: service_completed_successfully

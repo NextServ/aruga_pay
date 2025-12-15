@@ -1,0 +1,41 @@
+version: "3.8" # Updated version
+name: ${CONTAINER_NAME}
+services:
+  mariadb:
+    image: mariadb:10.8
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
+      - --skip-innodb-read-only-compressed # Temporary fix for MariaDB 10.6
+      - --max-allowed-packet=256M # Enable big restores
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    volumes:
+      - mariadb-data:/var/lib/mysql
+
+  redis:
+    image: redis:alpine
+
+  frappe:
+    image: frappe/bench:latest
+    env_file: '.env'
+    command: bash /workspace/init.sh
+    environment:
+      - SHELL=/bin/bash
+    working_dir: /home/frappe
+    volumes:
+      - .:/workspace
+    ports:
+      - ${BENCH_HTTP_PORT}:8000
+      - ${BENCH_WS_PORT}:9000
+
+  # Testing for online access
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+    # command: tunnel --url http://localhost:${BENCH_HTTP_PORT}
+    # command: tunnel --no-autoupdate run --token ${TOKEN}
+    # restart: unless-stopped
+
+volumes:
+  mariadb-data:
