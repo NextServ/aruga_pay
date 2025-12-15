@@ -1,0 +1,74 @@
+[
+  {
+    "doctype": "Job Function",
+    "name": "Accounting",
+    "job_function": "Accounting",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Job Function",
+    "name": "Administration",
+    "job_function": "Administration",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Job Function",
+    "name": "Human Resources",
+    "job_function": "Human Resources",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Job Function",
+    "name": "IT Support",
+    "job_function": "IT Support",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Job Function",
+    "name": "Engineering",
+    "job_function": "Engineering",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Job Function",
+    "name": "Operations",
+    "job_function": "Operations",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Job Function",
+    "name": "Sales",
+    "job_function": "Sales",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Job Function",
+    "name": "Marketing",
+    "job_function": "Marketing",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Job Function",
+    "name": "Customer Service",
+    "job_function": "Customer Service",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Job Function",
+    "name": "Procurement",
+    "job_function": "Procurement",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Job Function",
+    "name": "Logistics",
+    "job_function": "Logistics",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Job Function",
+    "name": "Quality Assurance",
+    "job_function": "Quality Assurance",
+    "docstatus": 0
+  }
+]

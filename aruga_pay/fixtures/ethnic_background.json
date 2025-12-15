@@ -1,0 +1,74 @@
+[
+  {
+    "doctype": "Ethnic Background",
+    "name": "Tagalog",
+    "ethnic_background": "Tagalog",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Ethnic Background",
+    "name": "Cebuano",
+    "ethnic_background": "Cebuano",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Ethnic Background",
+    "name": "Ilocano",
+    "ethnic_background": "Ilocano",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Ethnic Background",
+    "name": "Bicolano",
+    "ethnic_background": "Bicolano",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Ethnic Background",
+    "name": "Waray",
+    "ethnic_background": "Waray",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Ethnic Background",
+    "name": "Kapampangan",
+    "ethnic_background": "Kapampangan",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Ethnic Background",
+    "name": "Pangasinense",
+    "ethnic_background": "Pangasinense",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Ethnic Background",
+    "name": "Hiligaynon",
+    "ethnic_background": "Hiligaynon",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Ethnic Background",
+    "name": "Maguindanaon",
+    "ethnic_background": "Maguindanaon",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Ethnic Background",
+    "name": "Maranao",
+    "ethnic_background": "Maranao",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Ethnic Background",
+    "name": "Tausug",
+    "ethnic_background": "Tausug",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Ethnic Background",
+    "name": "Ifugao",
+    "ethnic_background": "Ifugao",
+    "docstatus": 0
+  }
+]

@@ -1,0 +1,62 @@
+[
+  {
+    "doctype": "Occupational Level",
+    "name": "Entry Level",
+    "occupational_level": "Entry Level",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Occupational Level",
+    "name": "Junior Level",
+    "occupational_level": "Junior Level",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Occupational Level",
+    "name": "Mid Level",
+    "occupational_level": "Mid Level",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Occupational Level",
+    "name": "Senior Level",
+    "occupational_level": "Senior Level",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Occupational Level",
+    "name": "Supervisor",
+    "occupational_level": "Supervisor",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Occupational Level",
+    "name": "Manager",
+    "occupational_level": "Manager",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Occupational Level",
+    "name": "Assistant Manager",
+    "occupational_level": "Assistant Manager",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Occupational Level",
+    "name": "Director",
+    "occupational_level": "Director",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Occupational Level",
+    "name": "Executive",
+    "occupational_level": "Executive",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Occupational Level",
+    "name": "Intern",
+    "occupational_level": "Intern",
+    "docstatus": 0
+  }
+]

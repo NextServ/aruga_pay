@@ -1,0 +1,62 @@
+[
+  {
+    "doctype": "Skill Category",
+    "name": "Technical",
+    "skill_category": "Technical",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Skill Category",
+    "name": "Managerial",
+    "skill_category": "Managerial",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Skill Category",
+    "name": "Clerical",
+    "skill_category": "Clerical",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Skill Category",
+    "name": "Customer Service",
+    "skill_category": "Customer Service",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Skill Category",
+    "name": "Finance",
+    "skill_category": "Finance",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Skill Category",
+    "name": "IT and Software",
+    "skill_category": "IT and Software",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Skill Category",
+    "name": "Healthcare",
+    "skill_category": "Healthcare",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Skill Category",
+    "name": "Construction",
+    "skill_category": "Construction",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Skill Category",
+    "name": "Education",
+    "skill_category": "Education",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Skill Category",
+    "name": "Manufacturing",
+    "skill_category": "Manufacturing",
+    "docstatus": 0
+  }
+]

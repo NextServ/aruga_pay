@@ -1,0 +1,50 @@
+[
+  {
+    "doctype": "Blood Group",
+    "name": "A+",
+    "blood_group": "A+",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Blood Group",
+    "name": "A-",
+    "blood_group": "A-",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Blood Group",
+    "name": "B+",
+    "blood_group": "B+",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Blood Group",
+    "name": "B-",
+    "blood_group": "B-",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Blood Group",
+    "name": "O+",
+    "blood_group": "O+",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Blood Group",
+    "name": "O-",
+    "blood_group": "O-",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Blood Group",
+    "name": "AB+",
+    "blood_group": "AB+",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Blood Group",
+    "name": "AB-",
+    "blood_group": "AB-",
+    "docstatus": 0
+  }
+]

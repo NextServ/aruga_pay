@@ -1,0 +1,92 @@
+[
+  {
+    "doctype": "Nationality",
+    "name": "Filipino",
+    "nationality": "Filipino",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Nationality",
+    "name": "American",
+    "nationality": "American",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Nationality",
+    "name": "Canadian",
+    "nationality": "Canadian",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Nationality",
+    "name": "British",
+    "nationality": "British",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Nationality",
+    "name": "Australian",
+    "nationality": "Australian",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Nationality",
+    "name": "Chinese",
+    "nationality": "Chinese",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Nationality",
+    "name": "Japanese",
+    "nationality": "Japanese",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Nationality",
+    "name": "Korean",
+    "nationality": "Korean",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Nationality",
+    "name": "Indian",
+    "nationality": "Indian",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Nationality",
+    "name": "Indonesian",
+    "nationality": "Indonesian",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Nationality",
+    "name": "Malaysian",
+    "nationality": "Malaysian",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Nationality",
+    "name": "Singaporean",
+    "nationality": "Singaporean",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Nationality",
+    "name": "Thai",
+    "nationality": "Thai",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Nationality",
+    "name": "Vietnamese",
+    "nationality": "Vietnamese",
+    "docstatus": 0
+  },
+  {
+    "doctype": "Nationality",
+    "name": "German",
+    "nationality": "German",
+    "docstatus": 0
+  }
+]
