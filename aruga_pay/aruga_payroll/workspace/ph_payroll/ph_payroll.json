@@ -1,0 +1,269 @@
+{
+ "charts": [],
+ "content": "[{\"id\":\"a1b2c3d4e5\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"f6g7h8i9j0\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\">Reports &amp; Masters</span>\",\"col\":12}},{\"id\":\"k1l2m3n4o5\",\"type\":\"card\",\"data\":{\"card_name\":\"Payroll Settings\",\"col\":4}},{\"id\":\"p6q7r8s9t0\",\"type\":\"card\",\"data\":{\"card_name\":\"BIR Forms\",\"col\":4}},{\"id\":\"u1v2w3x4y5\",\"type\":\"card\",\"data\":{\"card_name\":\"Contribution Reports\",\"col\":4}},{\"id\":\"z1a2b3c4d5\",\"type\":\"card\",\"data\":{\"card_name\":\"HR Masters\",\"col\":4}}]",
+ "creation": "2026-03-05 00:00:00.000000",
+ "custom_blocks": [],
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "for_user": "",
+ "hide_custom": 0,
+ "icon": "hr",
+ "idx": 0,
+ "indicator_color": "",
+ "is_hidden": 0,
+ "label": "PH Payroll",
+ "links": [
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Payroll Settings",
+   "link_count": 4,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "PH Withholding Tax Table",
+   "link_count": 0,
+   "link_to": "PH Withholding Tax Table",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "PH Withholding Tax Slab",
+   "link_count": 0,
+   "link_to": "PH Withholding Tax Slab",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "SSS Contribution",
+   "link_count": 0,
+   "link_to": "SSS Contribution",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "SSS Contribution Slab",
+   "link_count": 0,
+   "link_to": "SSS Contribution Slab",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "BIR Forms",
+   "link_count": 3,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "BIR Form 1601-C",
+   "link_count": 0,
+   "link_to": "BIR Form 1601-C",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "BIR Form 1604C",
+   "link_count": 0,
+   "link_to": "BIR Form 1604C",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "BIR Form 2316",
+   "link_count": 0,
+   "link_to": "BIR Form 2316",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Contribution Reports",
+   "link_count": 3,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "PH - SSS Contribution",
+   "link_count": 0,
+   "link_to": "PH - SSS Contribution",
+   "link_type": "Report",
+   "onboard": 0,
+   "report_ref_doctype": "Employee",
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "PH - PhilHealth Contribution",
+   "link_count": 0,
+   "link_to": "PH - PhilHealth Contribution",
+   "link_type": "Report",
+   "onboard": 0,
+   "report_ref_doctype": "Employee",
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "PH - Pag-Ibig Contribution",
+   "link_count": 0,
+   "link_to": "PH - Pag-Ibig Contribution",
+   "link_type": "Report",
+   "onboard": 0,
+   "report_ref_doctype": "Employee",
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "HR Masters",
+   "link_count": 10,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Blood Group",
+   "link_count": 0,
+   "link_to": "Blood Group",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Citizenship",
+   "link_count": 0,
+   "link_to": "Citizenship",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Ethnic Background",
+   "link_count": 0,
+   "link_to": "Ethnic Background",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Job Function",
+   "link_count": 0,
+   "link_to": "Job Function",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Nationality",
+   "link_count": 0,
+   "link_to": "Nationality",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Occupational Category",
+   "link_count": 0,
+   "link_to": "Occupational Category",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Occupational Level",
+   "link_count": 0,
+   "link_to": "Occupational Level",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Religion",
+   "link_count": 0,
+   "link_to": "Religion",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Skill Category",
+   "link_count": 0,
+   "link_to": "Skill Category",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Employee Identification Document",
+   "link_count": 0,
+   "link_to": "Employee Identification Document",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  }
+ ],
+ "modified": "2026-03-05 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Aruga Payroll",
+ "name": "PH Payroll",
+ "number_cards": [],
+ "owner": "Administrator",
+ "parent_page": "",
+ "public": 1,
+ "quick_lists": [],
+ "roles": [],
+ "sequence_id": 40.0,
+ "shortcuts": [],
+ "title": "PH Payroll"
+}
