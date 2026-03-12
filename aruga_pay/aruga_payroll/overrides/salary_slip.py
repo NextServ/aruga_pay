@@ -1378,7 +1378,10 @@ class CustomSalarySlip(TransactionBase):
 		).as_dict()
 
 		# Merge derived rate variables first so they can be overridden by assignment fields
-		data.update(self.calculate_salary_structure_rates(assignment_dict))
+		# Capture monthly_rate now so PH lambdas below can close over it correctly.
+		rates = self.calculate_salary_structure_rates(assignment_dict)
+		monthly_rate = flt(rates.get("monthly_rate", 0))
+		data.update(rates)
 
 		# Full assignment (custom fields included)
 		data.update(assignment_dict)
@@ -1387,18 +1390,45 @@ class CustomSalarySlip(TransactionBase):
 		data.update(employee)
 		data.update(self.as_dict())
 
+
+
 		# CUSTOM: PH statutory payroll lambdas
+		#
+		# SSS lambdas default to monthly_rate when no pay argument is passed.
+		# basic_pay in the formula context is always monthly_rate so formulas
+		# like ph_sss(basic_pay) always use the correct full-month bracket.
+		#
+		# Available lambdas:
+		#   SSS EE  : ph_sss(basic_pay)
+		#   SSS ER  : ph_sss_er(basic_pay)
+		#   SSS EC  : ph_sss_ec(basic_pay)
+		#   WTax    : ph_wtax()
+		#   13th    : ph_13th_month_pay()
 		data.update(
 			{
-				"ph_sss": lambda pay: self.calculate_employee_sss_contribution(
-					pay, self.end_date, "employee_contribution"
-				),
-				"ph_sss_er": lambda pay: self.calculate_employee_sss_contribution(
-					pay, self.end_date, "employer_contribution"
-				),
-				"ph_sss_ec": lambda pay: self.calculate_employee_sss_contribution(
-					pay, self.end_date, "employee_compensation"
-				),
+				# SSS — employee share
+				# Always uses monthly_rate for the bracket lookup regardless of what
+				# argument is passed (ph_sss(basic_pay), ph_sss(gross_pay), ph_sss()).
+				# SSS should always be based on the total monthly salary, not the
+				# current period's pay. The bimonthly guard inside
+						# calculate_employee_sss_contribution returns 0 on the 1st period.
+			"ph_sss": lambda pay=None: self.calculate_employee_sss_contribution(
+				pay,
+				self.end_date,
+				"employee_contribution",
+			),
+			# SSS — employer share
+			"ph_sss_er": lambda pay=None: self.calculate_employee_sss_contribution(
+				pay,
+				self.end_date,
+				"employer_contribution",
+			),
+			# SSS — employee compensation (EC)
+			"ph_sss_ec": lambda pay=None: self.calculate_employee_sss_contribution(
+				pay,
+				self.end_date,
+				"employee_compensation",
+			),
 				"ph_wtax": lambda adjustment=0: self.calculate_withholding_tax(adjustment),
 				"ph_13th_month_pay": lambda: self.calculate_13th_month_pay(),
 			}
@@ -1545,13 +1575,13 @@ class CustomSalarySlip(TransactionBase):
 
 		if self.is_new() and not tax_components:
 			tax_components = self.get_tax_components()
-			frappe.msgprint(
-				_(
-					"Added tax components from the Salary Component master as the salary structure didn't have any tax component."
-				),
-				indicator="blue",
-				alert=True,
-			)
+			# frappe.msgprint(
+			# 	_(
+			# 		"Added tax components from the Salary Component master as the salary structure didn't have any tax component."
+			# 	),
+			# 	indicator="blue",
+			# 	alert=True,
+			# )
 
 		self._component_based_variable_tax = {}
 		if tax_components and self.payroll_period and self.salary_structure:
@@ -2365,7 +2395,27 @@ class CustomSalarySlip(TransactionBase):
 	# -----------------------------------------------------------------------
 
 	def calculate_employee_sss_contribution(self, pay, date, contribution_type):
-		"""Look up the SSS Contribution table and return the applicable amount."""
+		"""
+		For bimonthly payroll:
+		- 1st period (start day < 16): returns 0
+		- 2nd period: combines current pay + matching pay from 1st period slip
+					so the bracket reflects the full monthly equivalent.
+
+		Formula controls the basis:
+			ph_sss(basic_pay)  → bracket = 1st basic_pay + 2nd basic_pay
+			ph_sss(gross_pay)  → bracket = 1st gross_pay + 2nd gross_pay
+		"""
+		if not pay:
+			return 0
+
+		period_days = date_diff(self.end_date, self.start_date) + 1
+		if period_days <= 16:
+			if getdate(self.start_date).day < 16:
+				return 0
+
+			# Add matching pay from 1st period
+			pay += self._get_first_period_pay(pay)
+
 		contribution_table = frappe.get_list(
 			"SSS Contribution",
 			filters={"effective_date": ["<=", date]},
@@ -2387,22 +2437,134 @@ class CustomSalarySlip(TransactionBase):
 					return flt(row.employee_compensation or 0)
 		return 0
 
+	def _get_first_period_pay(self, current_period_pay):
+		"""
+		Fetches the matching pay from the 1st period salary slip by finding
+		the Salary Detail component whose 2nd period amount is closest to
+		current_period_pay — OR by matching against slip-level fields.
+
+		Strategy:
+		1. Try to match against slip header fields (gross_pay, basic_pay)
+		2. Whichever is closest to current_period_pay is the one the formula used
+		3. Return that same field's value from the 1st period slip
+
+		Returns 0 if no 1st period slip found.
+		"""
+		first_period_start = get_first_day(self.start_date)
+		first_period_end = add_days(first_period_start, 14)  # day 1-15
+
+		first_slip = frappe.db.get_value(
+			"Salary Slip",
+			{
+				"employee": self.employee,
+				"start_date": first_period_start,
+				"end_date": first_period_end,
+				"docstatus": ("!=", 2),
+				"name": ("!=", self.name),
+			},
+			["gross_pay", "basic_pay"],
+			order_by="docstatus desc",
+			as_dict=True,
+		)
+
+		if not first_slip:
+			return 0
+
+		first_gross = flt(first_slip.get("gross_pay") or 0)
+		first_basic = flt(first_slip.get("basic_pay") or 0)
+
+		# Match by proximity: whichever slip field is closest to current_period_pay
+		# is the one the formula used (basic_pay or gross_pay)
+		current_gross = flt(self.gross_pay or 0)
+		current_basic = flt(self.basic_pay or 0)
+
+		diff_gross = abs(current_period_pay - current_gross)
+		diff_basic = abs(current_period_pay - current_basic)
+
+		if diff_basic <= diff_gross:
+			return first_basic
+		else:
+			return first_gross
+
 	def calculate_withholding_tax(self, adjustment=0):
-		"""Compute Philippine withholding tax using PH Withholding Tax Table."""
-		# Start from gross pay and subtract non-taxable statutory deductions
-		net_pay = self.gross_pay or 0
+		"""
+		Withholding tax calculation for PH payroll:
+		- Bimonthly 1st half (start day < 16): return 0
+		- Bimonthly 2nd half: use full-month taxable income (current + 1st half)
+		- Monthly: normal calculation on current slip
+		"""
+		period_days = date_diff(self.end_date, self.start_date) + 1
+		is_bimonthly = period_days <= 16
 
-		non_taxable_deductions = [
-			"PH - HDMF Contribution",
-			"PH - PHIC Contribution",
+		# Debug: always log when method runs uncomment for debugging
+		# frappe.log_error(
+		# 	title="WTAX DEBUG - Start",
+		# 	message=f"Slip: {self.name}\n"
+		# 			f"Start: {self.start_date}\n"
+		# 			f"End: {self.end_date}\n"
+		# 			f"Period days: {period_days}\n"
+		# 			f"Is bimonthly: {is_bimonthly}\n"
+		# 			f"Day of month: {getdate(self.start_date).day if self.start_date else 'N/A'}"
+		# )
+
+		# Skip in 1st half of bimonthly
+		if is_bimonthly and getdate(self.start_date).day < 16:
+			frappe.log_error(
+				title="WTAX DEBUG - Skip 1st Half",
+				message="Returning 0 for bimonthly 1st half"
+			)
+			return 0
+
+		# Start with this period's gross pay
+		taxable_pay = flt(self.gross_pay or 0)
+
+		# Subtract this period's mandatory non-taxable deductions
+		non_taxable = [
 			"PH - SSS Contribution",
+			"PH - PHIC Contribution",
+			"PH - HDMF Contribution"
 		]
-		for deduction in self.deductions or []:
-			if deduction.salary_component in non_taxable_deductions:
-				net_pay -= flt(deduction.amount)
+		subtracted = []
+		for d in self.deductions or []:
+			if d.salary_component in non_taxable:
+				amount = flt(d.amount or 0)
+				taxable_pay -= amount
+				subtracted.append(f"{d.salary_component}: -{amount}")
 
-		pay = net_pay + adjustment
+		# For bimonthly 2nd half: accumulate full-month taxable base
+		if is_bimonthly:
+			first_half = self._get_first_half_taxable_data()
+			if first_half:
+				taxable_pay += flt(first_half.get("gross_pay", 0))
+				taxable_pay -= flt(first_half.get("sss_amount", 0))
+				taxable_pay -= flt(first_half.get("phic_amount", 0))
+				taxable_pay -= flt(first_half.get("hdmf_amount", 0))
+                # uncomment for debugging
+				# frappe.log_error(
+				# 	title="WTAX DEBUG - 1st Half Added",
+				# 	message=f"Added gross: {first_half.get('gross_pay', 0)}\n"
+				# 			f"Subtracted SSS: {first_half.get('sss_amount', 0)}\n"
+				# 			f"Subtracted PHIC: {first_half.get('phic_amount', 0)}\n"
+				# 			f"Subtracted HDMF: {first_half.get('hdmf_amount', 0)}"
+				# )
+			else:
+				frappe.log_error(
+					title="WTAX DEBUG - No 1st Half Found",
+					message="Using only current period (may under-withhold)"
+				)
 
+		taxable_pay += flt(adjustment or 0)
+		taxable_pay = max(taxable_pay, 0)
+
+		# Log taxable base before slabs uncomment for debugging
+		# frappe.log_error(
+		# 	title="WTAX DEBUG - Taxable Base",
+		# 	message=f"Final taxable_pay: {taxable_pay:.2f}\n"
+		# 			f"This period gross: {flt(self.gross_pay or 0):.2f}\n"
+		# 			f"Subtracted this period: {', '.join(subtracted) or 'None'}"
+		# )
+
+		# Fetch latest tax table
 		date = self.posting_date or self.end_date
 		table_list = frappe.get_list(
 			"PH Withholding Tax Table",
@@ -2412,17 +2574,102 @@ class CustomSalarySlip(TransactionBase):
 		)
 
 		if not table_list:
+			frappe.log_error(title="WTAX DEBUG - No Table", message="No valid table found")
 			return 0
 
 		table = frappe.get_doc("PH Withholding Tax Table", table_list[0])
-		total_tax = 0
 
-		for row in table.slabs:
-			if pay >= row.from_amount:
-				bracket = min(pay - row.from_amount, (row.to_amount or pay) - row.from_amount)
-				total_tax += bracket * (row.percent_withheld / 100)
+		# Apply progressive slabs
+		total_tax = 0.0
+		prev_to = 0.0
+		slab_logs = []
 
-		return flt(total_tax)
+		for row in sorted(table.slabs, key=lambda x: x.from_amount or 0):
+			if taxable_pay <= prev_to:
+				break
+
+			bracket_start = max(prev_to, row.from_amount or 0)
+			bracket_end = row.to_amount or float('inf')
+
+			if taxable_pay > bracket_start:
+				bracket_amount = min(taxable_pay, bracket_end) - bracket_start
+				tax_this = bracket_amount * (row.percent_withheld / 100)
+				total_tax += tax_this
+
+				slab_logs.append(
+					f"Slab {row.idx or ''}: {bracket_start:,.2f} – {bracket_end:,.2f} "
+					f"({row.percent_withheld}% on {bracket_amount:,.2f}) = {tax_this:,.2f}"
+				)
+
+			prev_to = bracket_end if row.to_amount else float('inf')
+
+		# Final result log uncomment for debugging
+		# frappe.log_error(
+		# 	title="WTAX DEBUG - Final Result",
+		# 	message=f"Taxable Pay: {taxable_pay:.2f}\n"
+		# 			f"Slab breakdown:\n" + "\n".join(slab_logs) + "\n\n"
+		# 			f"Total tax: {total_tax:.2f}\n"
+		# 			f"Final returned: {flt(total_tax, 2):.2f}"
+		# )
+
+		return flt(total_tax, 2)
+
+	def _get_first_half_taxable_data(self):
+		from frappe.utils import get_first_day, add_days
+
+		month_start = get_first_day(self.start_date)
+		first_half_end = add_days(month_start, 14)  # adjust if your 1st half ends on different day
+
+		first_slip = frappe.get_all(
+			"Salary Slip",
+			filters={
+				"employee": self.employee,
+				"start_date": [">=", month_start],
+				"end_date": ["<=", first_half_end],
+				"docstatus": ("!=", 2),
+				"name": ["!=", self.name],
+			},
+			fields=["name", "gross_pay"],
+			order_by="end_date desc",
+			limit=1
+		)
+
+		if not first_slip:
+			frappe.log_error(title="WTAX DEBUG - No 1st Half", message="No previous slip found")
+			return None
+
+		slip_name = first_slip[0].name
+		gross_pay = flt(first_slip[0].gross_pay or 0)
+
+		details = frappe.get_all(
+			"Salary Detail",
+			filters={
+				"parent": slip_name,
+				"parentfield": "deductions",
+				"salary_component": ["in", [
+					"PH - SSS Contribution",
+					"PH - PHIC Contribution",
+					"PH - HDMF Contribution"
+				]]
+			},
+			fields=["salary_component", "amount"]
+		)
+
+		sss_amount = phic_amount = hdmf_amount = 0.0
+		for d in details:
+			if d.salary_component == "PH - SSS Contribution":
+				sss_amount = flt(d.amount)
+			elif d.salary_component == "PH - PHIC Contribution":
+				phic_amount = flt(d.amount)
+			elif d.salary_component == "PH - HDMF Contribution":
+				hdmf_amount = flt(d.amount)
+
+		return {
+			"gross_pay": gross_pay,
+			"sss_amount": sss_amount,
+			"phic_amount": phic_amount,
+			"hdmf_amount": hdmf_amount
+		}
 
 	def calculate_13th_month_pay(self):
 		"""Compute 13th month pay based on YTD is_13th_month_pay_applicable earnings."""
