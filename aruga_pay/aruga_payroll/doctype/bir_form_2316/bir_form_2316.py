@@ -79,10 +79,18 @@ class BIRForm2316(Document):
 			if document.type == 'TIN':
 				self.employee_tin = document.identification_number
 
-		self.employee_zip = employee.zip
-		self.employee_local_zip = employee.zip
+		self.employee_zip = getattr(employee, 'zip', '') or ''
+		self.employee_local_zip = getattr(employee, 'zip', '') or ''
 
-		address = ', '.join(filter(lambda x: x, [employee.street, employee.suburb, employee.city, employee.province, employee.country]))
+		address = ', '.join(filter(lambda x: x, [
+			getattr(employee, 'street', ''),
+			getattr(employee, 'suburb', ''),
+			getattr(employee, 'city', ''),
+			getattr(employee, 'province', ''),
+			getattr(employee, 'country', ''),
+		]))
+		if not address:
+			address = employee.get('current_address') or ''
 		self.employee_address = address
 		self.employee_local_address = address
 		self.employee_contact_number = employee.cell_number
