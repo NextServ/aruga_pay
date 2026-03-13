@@ -113,7 +113,7 @@ override_doctype_class = {
 # ------------
 
 # before_install = "aruga_pay.install.before_install"
-# after_install = "aruga_pay.install.after_install"
+after_install = "aruga_pay.install.after_install"
 
 # Uninstallation
 # ------------
