@@ -30,9 +30,15 @@ doc_events = {
 }
 
 override_doctype_class = {
-	# "ToDo": "custom_app.overrides.CustomToDo"
     "Salary Slip": "aruga_pay.aruga_payroll.overrides.salary_slip.CustomSalarySlip",
+    "Salary Structure": "aruga_pay.aruga_payroll.overrides.salary_structure.CustomSalaryStructure",
 }
+
+# 3. JS file
+doctype_js = {
+    "Salary Structure": "public/js/salary_structure.js"
+}
+
 
 
 # Apps
