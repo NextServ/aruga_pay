@@ -2,50 +2,72 @@
 # For license information, please see license.txt
 
 import frappe
+from frappe.utils import cint
 
 
 def after_install():
-	setup_defaults()
+    setup_defaults()
 
 
 def setup_defaults():
-	set_payroll_settings_defaults()
-	create_salary_components()
+    """Main setup function that runs after app installation"""
+    set_payroll_settings_defaults()
+    create_ph_salary_components()
+    frappe.db.commit()
+    print("✅ PH Payroll Setup Completed Successfully")
 
 
 def set_payroll_settings_defaults():
-	"""
-	Set default Payroll Settings for PH payroll setup.
-	Runs only once on fresh install — does not override user changes on migrate.
-	"""
-	settings = frappe.get_single("Payroll Settings")
+    """Set default Payroll Settings for PH payroll"""
+    settings = frappe.get_single("Payroll Settings")
+    
+    # You can choose to force or only set if empty
+    settings.payroll_based_on = "Attendance"
+    settings.consider_unmarked_attendance_as = "Absent"        # Changed to Absent as you want
+    
+    # Optional: Only set if currently empty
+    # if not settings.consider_unmarked_attendance_as:
+    #     settings.consider_unmarked_attendance_as = "Absent"
+    
+    settings.save(ignore_permissions=True)
+    frappe.db.commit()
+    print("✓ Payroll Settings defaults applied")
 
-	settings.payroll_based_on = "Attendance"
-	settings.consider_unmarked_attendance_as = "Absent"
 
+def create_ph_salary_components():
+    """Create or update all PH Salary Components"""
+    
+    components_data = _get_salary_components()
+    
+    for data in components_data:
+        name = data["name"]
+        
+        if frappe.db.exists("Salary Component", name):
+            doc = frappe.get_doc("Salary Component", name)
+        else:
+            doc = frappe.new_doc("Salary Component")
+        
+        # Set all standard fields
+        for key, value in data.items():
+            setattr(doc, key, value)
+        
+        # === FORCE CUSTOM FIELDS (This is the most important part) ===
+        doc.formula_based_on_attendance = cint(data.get("formula_based_on_attendance", 0))
+        doc.formula_effectivity = data.get("formula_effectivity", "Period")
+        doc.formula_prorated = cint(data.get("formula_prorated", 0))
+        doc.is_13th_month_pay_applicable = cint(data.get("is_13th_month_pay_applicable", 0))
+        doc.is_basic_pay = cint(data.get("is_basic_pay", 0))
+        
+        doc.flags.ignore_mandatory = True
+        doc.flags.ignore_permissions = True
+        
+        try:
+            doc.save(ignore_permissions=True)
+            print(f"✓ Updated: {name}")
+        except Exception as e:
+            print(f"✗ Failed {name}: {e}")
 
-	settings.save(ignore_permissions=True)
-	frappe.db.commit()
-
-
-def create_salary_components():
-	"""
-	Create default PH salary components on fresh install.
-	Skips existing components — does not override user changes on migrate.
-	"""
-	components = _get_salary_components()
-
-	for data in components:
-		name = data.get("name")
-
-		if frappe.db.exists("Salary Component", name):
-			continue  # already exists, skip
-
-		doc = frappe.new_doc("Salary Component")
-		doc.update(data)
-		doc.insert(ignore_permissions=True)
-
-	frappe.db.commit()
+    print("All Salary Components processed.")
 
 
 def _get_salary_components():

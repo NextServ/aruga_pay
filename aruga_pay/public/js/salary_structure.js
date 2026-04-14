@@ -23,6 +23,7 @@ frappe.ui.form.on("Salary Detail", {
 				frappe.model.set_value(cdt, cdn, "formula_prorated", c.formula_prorated);
 				frappe.model.set_value(cdt, cdn, "statistical_component", c.statistical_component);
 				frappe.model.set_value(cdt, cdn, "is_basic_pay", c.is_basic_pay);
+				frappe.model.set_value(cdt, cdn, "is_13th_month_pay_applicable", c.is_13th_month_pay_applicable);
 				frappe.model.set_value(cdt, cdn, "do_not_include_in_accounts", c.do_not_include_in_accounts);
 
 				frm.refresh_field("earnings");
