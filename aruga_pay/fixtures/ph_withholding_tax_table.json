@@ -3,9 +3,9 @@
     "amended_from": null,
     "docstatus": 1,
     "doctype": "PH Withholding Tax Table",
-    "effective_date": "2018-01-01",
-    "modified": "2022-09-07 00:59:41.097406",
-    "name": "2018 - 2022",
+    "effective_date": "2025-01-01",
+    "modified": "2025-01-01 00:59:41.097406",
+    "name": "2025",
     "slabs": [
       {
         "from_amount": 0.0,
@@ -16,36 +16,36 @@
         "to_amount": 20833.0
       },
       {
-        "from_amount": 20833.0,
+        "from_amount": 20833.33,
         "parent": "2018 - 2022",
         "parentfield": "slabs",
         "parenttype": "PH Withholding Tax Table",
-        "percent_withheld": 20.0,
-        "to_amount": 33333.0
+        "percent_withheld": 15.0,
+        "to_amount": 33332.0
       },
       {
         "from_amount": 33333.0,
         "parent": "2018 - 2022",
         "parentfield": "slabs",
         "parenttype": "PH Withholding Tax Table",
-        "percent_withheld": 25.0,
-        "to_amount": 66667.0
+        "percent_withheld": 20.0,
+        "to_amount": 66666.0
       },
       {
         "from_amount": 66667.0,
         "parent": "2018 - 2022",
         "parentfield": "slabs",
         "parenttype": "PH Withholding Tax Table",
-        "percent_withheld": 30.0,
-        "to_amount": 166667.0
+        "percent_withheld": 25.0,
+        "to_amount": 166666.0
       },
       {
         "from_amount": 166667.0,
         "parent": "2018 - 2022",
         "parentfield": "slabs",
         "parenttype": "PH Withholding Tax Table",
-        "percent_withheld": 32.0,
-        "to_amount": 666667.0
+        "percent_withheld": 30.0,
+        "to_amount": 666666.0
       },
       {
         "from_amount": 666667.0,
