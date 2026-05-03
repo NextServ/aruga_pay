@@ -57,6 +57,10 @@ def create_ph_salary_components():
         doc.formula_prorated = cint(data.get("formula_prorated", 0))
         doc.is_13th_month_pay_applicable = cint(data.get("is_13th_month_pay_applicable", 0))
         doc.is_basic_pay = cint(data.get("is_basic_pay", 0))
+
+        # Set description (proration instructions visible in UI)
+        if data.get("description"):
+            doc.description = data["description"]
         
         doc.flags.ignore_mandatory = True
         doc.flags.ignore_permissions = True
@@ -538,15 +542,49 @@ def _get_salary_components():
 			"depends_on_payment_days": 0,
 		},
 		# --- Deductions ---
+		#
+		# PRORATION GUIDE (for salary structure component formula field):
+		#   All PH statutory lambdas use formula_effectivity = Period.
+		#   The lambda itself owns bimonthly detection — the framework's
+		#   formula_prorated checkbox has NO effect on these components.
+		#
+		#   To switch between non-prorated and prorated, change ONLY the
+		#   formula in the salary structure (not in this component master):
+		#
+		#     ph_phic()            → PHIC non-prorated  (0 on 1st, full on 2nd)
+		#     ph_phic(True)        → PHIC prorated       (half on 1st, remainder on 2nd)
+		#     ph_hdmf()            → HDMF non-prorated
+		#     ph_hdmf(True)        → HDMF prorated
+		#     ph_sss()             → SSS EE non-prorated
+		#     ph_sss(prorated=True)→ SSS EE prorated
+		#     ph_sss_er()          → SSS ER non-prorated
+		#     ph_sss_er(prorated=True) → SSS ER prorated
+		#     ph_sss_ec()          → SSS EC non-prorated
+		#     ph_sss_ec(prorated=True) → SSS EC prorated
+		#     ph_wtax()            → Withholding Tax (always non-prorated, 0 on 1st half)
+		#
 		{
 			"name": "PH - PHIC Contribution",
 			"salary_component": "PH - PHIC Contribution",
 			"salary_component_abbr": "PH_PHIC",
 			"type": "Deduction",
-			"formula": "max(250, (0.05 * basic_pay) * 0.5)",
+			# Default: non-prorated (0 on 1st period, full PHIC on 2nd period).
+			# Change to ph_phic(True) in your salary structure for prorated split.
+			"formula": "ph_phic()",
+			"description": (
+				"PhilHealth (PHIC) Employee Share.\n\n"
+				"PRORATION — change formula in your Salary Structure (not here):\n"
+				"  Non-prorated (default): ph_phic()\n"
+				"    → 1st period: ₱0  |  2nd period: full monthly PHIC\n"
+				"  Prorated: ph_phic(True)\n"
+				"    → 1st period: half  |  2nd period: remainder\n\n"
+				"formula_effectivity must always be 'Period'.\n"
+				"formula_prorated checkbox has NO effect — the lambda owns bimonthly logic."
+			),
 			"amount_based_on_formula": 1,
 			"formula_based_on_attendance": 0,
-			"formula_effectivity": "Monthly",
+			"formula_effectivity": "Period",
+			"formula_prorated": 0,
 			"statistical_component": 0,
 			"is_tax_applicable": 1,
 			"is_basic_pay": 0,
@@ -558,10 +596,20 @@ def _get_salary_components():
 			"salary_component": "PH - PHIC Employer Contribution",
 			"salary_component_abbr": "PH_PHIC_ER",
 			"type": "Deduction",
-			"formula": "max(250, (0.05 * basic_pay) * 0.5)",
+			# Statistical — tracks employer PHIC share, does not affect net pay.
+			# Uses same ph_phic() lambda as EE share.
+			"formula": "ph_phic()",
+			"description": (
+				"PhilHealth (PHIC) Employer Share — statistical, does not affect net pay.\n\n"
+				"PRORATION — change formula in your Salary Structure (not here):\n"
+				"  Non-prorated (default): ph_phic()\n"
+				"  Prorated: ph_phic(True)\n\n"
+				"formula_effectivity must always be 'Period'."
+			),
 			"amount_based_on_formula": 1,
 			"formula_based_on_attendance": 0,
-			"formula_effectivity": "Monthly",
+			"formula_effectivity": "Period",
+			"formula_prorated": 0,
 			"statistical_component": 1,
 			"is_tax_applicable": 1,
 			"is_basic_pay": 0,
@@ -573,10 +621,26 @@ def _get_salary_components():
 			"salary_component": "PH - HDMF Contribution",
 			"salary_component_abbr": "PH_HDMF",
 			"type": "Deduction",
-			"formula": "(0.01 * gross_pay)\n    if gross_pay <= 1500\n    else (150 if gross_pay >= 5000 else (0.02 * gross_pay))",
+			# Default: non-prorated (0 on 1st period, full HDMF on 2nd period).
+			# The lambda applies the formula to combined monthly gross — never per-period gross.
+			# Change to ph_hdmf(True) in your salary structure for prorated split.
+			"formula": "ph_hdmf()",
+			"description": (
+				"Pag-IBIG (HDMF) Employee Share.\n\n"
+				"The lambda always applies the HDMF formula to FULL MONTHLY gross, not\n"
+				"per-period gross, so the ₱200 cap is never incorrectly consumed per period.\n\n"
+				"PRORATION — change formula in your Salary Structure (not here):\n"
+				"  Non-prorated (default): ph_hdmf()\n"
+				"    → 1st period: ₱0  |  2nd period: full monthly HDMF\n"
+				"  Prorated: ph_hdmf(True)\n"
+				"    → 1st period: full/2  |  2nd period: remainder\n\n"
+				"formula_effectivity must always be 'Period'.\n"
+				"formula_prorated checkbox has NO effect — the lambda owns bimonthly logic."
+			),
 			"amount_based_on_formula": 1,
 			"formula_based_on_attendance": 0,
-			"formula_effectivity": "Monthly",
+			"formula_effectivity": "Period",
+			"formula_prorated": 0,
 			"statistical_component": 0,
 			"is_tax_applicable": 1,
 			"is_basic_pay": 0,
@@ -588,10 +652,19 @@ def _get_salary_components():
 			"salary_component": "PH - HDMF Employer Contribution",
 			"salary_component_abbr": "PH_HDMF_ER",
 			"type": "Deduction",
-			"formula": "(0.01 * gross_pay)\n    if gross_pay <= 1500\n    else (150 if gross_pay >= 5000 else (0.02 * gross_pay))",
+			# Statistical — tracks employer HDMF share, does not affect net pay.
+			"formula": "ph_hdmf()",
+			"description": (
+				"Pag-IBIG (HDMF) Employer Share — statistical, does not affect net pay.\n\n"
+				"PRORATION — change formula in your Salary Structure (not here):\n"
+				"  Non-prorated (default): ph_hdmf()\n"
+				"  Prorated: ph_hdmf(True)\n\n"
+				"formula_effectivity must always be 'Period'."
+			),
 			"amount_based_on_formula": 1,
 			"formula_based_on_attendance": 0,
-			"formula_effectivity": "Monthly",
+			"formula_effectivity": "Period",
+			"formula_prorated": 0,
 			"statistical_component": 1,
 			"is_tax_applicable": 1,
 			"is_basic_pay": 0,
@@ -603,10 +676,30 @@ def _get_salary_components():
 			"salary_component": "PH - SSS Contribution",
 			"salary_component_abbr": "PH_SSS",
 			"type": "Deduction",
-			"formula": "ph_sss(gross_pay)",
+			# Default: non-prorated.
+			# SSS bracket uses assignment.base for Monthly-rate employees and
+			# combined gross_pay for Daily/Hourly employees.
+			# Change to ph_sss(prorated=True) in your salary structure for prorated.
+			"formula": "ph_sss()",
+			"description": (
+				"SSS Employee Contribution.\n\n"
+				"Bracket lookup uses:\n"
+				"  Monthly rate  → assignment.base (contracted salary, unaffected by LWP)\n"
+				"  Daily/Hourly  → combined gross_pay from both cutoffs\n\n"
+				"PRORATION — change formula in your Salary Structure (not here):\n"
+				"  Non-prorated (default): ph_sss()\n"
+				"    → 1st period: ₱0  |  2nd period: full monthly SSS\n"
+				"  Prorated: ph_sss(prorated=True)\n"
+				"    → 1st period: full/2  |  2nd period: remainder\n\n"
+				"NOTE: ph_sss(True) will NOT work — True binds to 'pay', not 'prorated'.\n"
+				"Always use ph_sss(prorated=True).\n\n"
+				"formula_effectivity must always be 'Period'.\n"
+				"formula_prorated checkbox has NO effect."
+			),
 			"amount_based_on_formula": 1,
 			"formula_based_on_attendance": 0,
-			"formula_effectivity": "Monthly",
+			"formula_effectivity": "Period",
+			"formula_prorated": 0,
 			"statistical_component": 0,
 			"is_tax_applicable": 1,
 			"is_basic_pay": 0,
@@ -618,10 +711,19 @@ def _get_salary_components():
 			"salary_component": "PH - SSS Employer Contribution",
 			"salary_component_abbr": "PH_SSS_ER",
 			"type": "Deduction",
-			"formula": "ph_sss_er(gross_pay)",
+			# Statistical — tracks employer SSS share, does not affect net pay.
+			"formula": "ph_sss_er()",
+			"description": (
+				"SSS Employer Contribution — statistical, does not affect net pay.\n\n"
+				"PRORATION — change formula in your Salary Structure (not here):\n"
+				"  Non-prorated (default): ph_sss_er()\n"
+				"  Prorated: ph_sss_er(prorated=True)\n\n"
+				"formula_effectivity must always be 'Period'."
+			),
 			"amount_based_on_formula": 1,
 			"formula_based_on_attendance": 0,
-			"formula_effectivity": "Monthly",
+			"formula_effectivity": "Period",
+			"formula_prorated": 0,
 			"statistical_component": 1,
 			"is_tax_applicable": 1,
 			"is_basic_pay": 0,
@@ -633,10 +735,19 @@ def _get_salary_components():
 			"salary_component": "PH - SSS Employee Compensation",
 			"salary_component_abbr": "PH_SSS_EC",
 			"type": "Deduction",
-			"formula": "ph_sss_ec(gross_pay)",
+			# Statistical — EC fund, employer pays, does not affect net pay.
+			"formula": "ph_sss_ec()",
+			"description": (
+				"SSS Employee Compensation (EC) — statistical, does not affect net pay.\n\n"
+				"PRORATION — change formula in your Salary Structure (not here):\n"
+				"  Non-prorated (default): ph_sss_ec()\n"
+				"  Prorated: ph_sss_ec(prorated=True)\n\n"
+				"formula_effectivity must always be 'Period'."
+			),
 			"amount_based_on_formula": 1,
 			"formula_based_on_attendance": 0,
-			"formula_effectivity": "Monthly",
+			"formula_effectivity": "Period",
+			"formula_prorated": 0,
 			"statistical_component": 1,
 			"is_tax_applicable": 1,
 			"is_basic_pay": 0,
@@ -648,10 +759,23 @@ def _get_salary_components():
 			"salary_component": "PH - Withholding Tax",
 			"salary_component_abbr": "PH_WTAX",
 			"type": "Deduction",
+			# WTax is always non-prorated by design:
+			#   1st half → ₱0 (guard inside the lambda)
+			#   2nd half → full tax on combined monthly taxable income
+			# No prorated=True option — withholding tax is collected once per month.
 			"formula": "ph_wtax()",
+			"description": (
+				"BIR Withholding Tax on Compensation.\n\n"
+				"Always non-prorated — the lambda returns ₱0 on the 1st bimonthly half\n"
+				"and computes the full monthly tax on the 2nd half using both periods' gross.\n\n"
+				"There is no prorated option for WTax.\n\n"
+				"formula_effectivity must always be 'Period'.\n"
+				"formula_prorated checkbox has NO effect."
+			),
 			"amount_based_on_formula": 1,
 			"formula_based_on_attendance": 0,
-			"formula_effectivity": "Monthly",
+			"formula_effectivity": "Period",
+			"formula_prorated": 0,
 			"statistical_component": 0,
 			"is_tax_applicable": 0,
 			"is_basic_pay": 0,
