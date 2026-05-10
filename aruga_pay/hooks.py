@@ -36,9 +36,9 @@ override_doctype_class = {
 
 # 3. JS file
 doctype_js = {
-    "Salary Structure": "public/js/salary_structure.js"
+    "Salary Structure": "public/js/salary_structure.js",
+    "Salary Structure Assignment": "public/js/salary_structure_assignment.js",
 }
-
 
 
 # Apps
