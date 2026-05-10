@@ -1,4 +1,4 @@
-__version__ = "0.0.8"
+__version__ = "0.0.9"
 
 # # Apply patch automatically on app load
 # from .patches.salary_slip_patch import patch_salary_slip

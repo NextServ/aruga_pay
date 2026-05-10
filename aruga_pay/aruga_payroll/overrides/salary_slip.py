@@ -2406,6 +2406,116 @@ class CustomSalarySlip(TransactionBase):
 	# CUSTOM: Philippine statutory payroll methods
 	# -----------------------------------------------------------------------
 
+	def _detect_period_position(self):
+		"""
+		Determines whether this slip is standalone, the 1st, or the 2nd of a paired bimonthly
+		payroll — without ANY hardcoded date assumptions.
+
+		Strategy — pure DB adjacency:
+		  1. Look BACK:  find a slip ending on (self.start_date - 1 day)
+		                 If found → I am the 2nd period
+		  2. Look AHEAD: find a slip starting on (self.end_date + 1 day)
+		                 If found → I am the 1st period
+		  3. Neither    → standalone (monthly / weekly / any non-paired payroll)
+
+		Returns frappe._dict:
+		  has_pair      bool   — True if a paired slip exists
+		  is_first      bool   — True if this is the 1st (earlier) of the pair
+		  paired_name   str    — name of paired slip, or None
+		  paired_gross  float  — gross_pay of paired slip, or 0.0
+
+		Works for ANY cutoff pattern:
+		  Standard   : Oct  1–15  /  Oct 16–31
+		  Split      : Oct  5–20  /  Oct 21–Nov 4
+		  Cross-month: Dec 26–Jan 9  /  Jan 10–Jan 24
+		  Weekly/any : any two adjacent slips
+		"""
+		day_before = add_days(self.start_date, -1)
+		day_after  = add_days(self.end_date,    1)
+
+		# Look BACK — is there a slip that ends the day before I start?
+		prev_slip = frappe.db.get_value(
+			"Salary Slip",
+			{
+				"employee":  self.employee,
+				"end_date":  day_before,
+				"docstatus": ("!=", 2),
+				"name":      ("!=", self.name),
+			},
+			["name", "gross_pay"],
+			order_by="docstatus desc",
+			as_dict=True,
+		)
+		if prev_slip:
+			return frappe._dict(
+				has_pair=True,
+				is_first=False,
+				paired_name=prev_slip.name,
+				paired_gross=flt(prev_slip.gross_pay or 0),
+			)
+
+		# Look AHEAD — is there a slip that starts the day after I end?
+		next_slip = frappe.db.get_value(
+			"Salary Slip",
+			{
+				"employee":   self.employee,
+				"start_date": day_after,
+				"docstatus":  ("!=", 2),
+				"name":       ("!=", self.name),
+			},
+			["name", "gross_pay"],
+			order_by="docstatus desc",
+			as_dict=True,
+		)
+		if next_slip:
+			return frappe._dict(
+				has_pair=True,
+				is_first=True,
+				paired_name=next_slip.name,
+				paired_gross=flt(next_slip.gross_pay or 0),
+			)
+
+		# No adjacent slip found
+		period_days = date_diff(self.end_date, self.start_date) + 1
+
+		if period_days <= 16:
+			# Short period with no adjacent slip = potential 1st period whose 2nd
+			# slip hasn't been created yet (payroll is always run 1st period first).
+			# Treat as is_first=True so:
+			#   non-prorated → returns 0 (full amount will be charged on 2nd period)
+			#   prorated     → returns half estimate
+			# When the 2nd period slip is created later, it will find this slip
+			# via Look BACK and correctly compute the combined monthly amount.
+			return frappe._dict(
+				has_pair=False,   # no confirmed pair yet in DB
+				is_first=True,    # behave as 1st period
+				paired_name=None,
+				paired_gross=0.0,
+			)
+
+		# Long period (>16 days) with no adjacent slip — standalone payroll
+		return frappe._dict(
+			has_pair=False,
+			is_first=False,
+			paired_name=None,
+			paired_gross=0.0,
+		)
+
+	def _get_paired_period_slip(self, fields="name"):
+		"""
+		Legacy helper kept for compatibility — delegates to _detect_period_position.
+		Returns the paired slip's field value(s), or None if no paired slip found.
+		"""
+		pos = self._detect_period_position()
+		if not pos.has_pair:
+			return None
+
+		if isinstance(fields, list):
+			return frappe.db.get_value(
+				"Salary Slip", pos.paired_name, fields, as_dict=True
+			)
+		return frappe.db.get_value("Salary Slip", pos.paired_name, fields)
+
 	def _get_monthly_sss_for_display(self):
 		"""
 		Computes the monthly_sss_slip display value.
@@ -2426,36 +2536,27 @@ class CustomSalarySlip(TransactionBase):
 				break
 
 		period_days = date_diff(self.end_date, self.start_date) + 1
-		is_bimonthly = period_days <= 16
+		pos = self._detect_period_position()
 
-		if not is_bimonthly:
-			# Monthly payroll — current period IS the full month
+		if not pos.has_pair:
 			return current_sss
 
-		is_first_half = getdate(self.start_date).day < 16
-
-		if is_first_half:
-			# 1st period: show actual SSS deducted this cutoff
+		if pos.is_first:
 			return current_sss
 
 		# 2nd period: add 1st period's actual SSS from Salary Detail
-		first_period_start = get_first_day(self.start_date)
-		first_period_end = add_days(first_period_start, 14)
+		if not pos.paired_name:
+			return current_sss
 
 		first_sss_result = frappe.db.sql(
 			"""
 			SELECT COALESCE(SUM(sd.amount), 0)
 			FROM `tabSalary Detail` sd
-			INNER JOIN `tabSalary Slip` ss ON ss.name = sd.parent
-			WHERE ss.employee    = %s
-			  AND ss.start_date  = %s
-			  AND ss.end_date    = %s
-			  AND ss.docstatus  != 2
-			  AND ss.name       != %s
-			  AND sd.parentfield = 'deductions'
+			WHERE sd.parent          = %s
+			  AND sd.parentfield     = 'deductions'
 			  AND sd.salary_component = 'PH - SSS Contribution'
 			""",
-			(self.employee, first_period_start, first_period_end, self.name),
+			(pos.paired_name,),
 		)
 		first_sss = flt(first_sss_result[0][0]) if first_sss_result else 0.0
 
@@ -2479,50 +2580,34 @@ class CustomSalarySlip(TransactionBase):
 		Returns 0 if no SSS Contribution table is found for the period.
 		"""
 		date = self.end_date
-		period_days = date_diff(self.end_date, self.start_date) + 1
-		is_bimonthly = period_days <= 16
+		pos = self._detect_period_position()
 		current_gross = flt(self.gross_pay or 0)
+		period_days = date_diff(self.end_date, self.start_date) + 1
 
-		if not is_bimonthly:
-			monthly_pay = current_gross
-		else:
-			is_first_half = getdate(self.start_date).day < 16
-
-			if is_first_half:
-				# 2nd period slip not yet available — estimate symmetric bimonthly.
-				# Any estimation error self-corrects on the 2nd period: the 2nd period
-				# uses actual 1st-period gross from DB and subtracts what was charged.
+		if not pos.has_pair:
+			if pos.is_first:
+				# Short period, 2nd slip not yet created — estimate monthly as ×2
 				monthly_pay = current_gross * 2
 			else:
-				first_period_start = get_first_day(self.start_date)
-				first_period_end = add_days(first_period_start, 14)
-
-				first_gross = flt(
-					frappe.db.get_value(
-						"Salary Slip",
-						{
-							"employee": self.employee,
-							"start_date": first_period_start,
-							"end_date": first_period_end,
-							"docstatus": ("!=", 2),
-							"name": ("!=", self.name),
-						},
-						"gross_pay",
-						order_by="docstatus desc",
-					)
-					or 0
-				)
-				monthly_pay = current_gross + first_gross
+				# True standalone (monthly/weekly payroll)
+				monthly_pay = current_gross
+		elif pos.is_first:
+			# 2nd period not yet available — estimate using paired gross if known, else ×2
+			monthly_pay = current_gross + (pos.paired_gross if pos.paired_gross else current_gross)
+		else:
+			# 2nd period: use actual 1st-period gross from paired slip
+			monthly_pay = current_gross + pos.paired_gross
 
 		frappe.msgprint(
 			f"<b>SSS — Monthly Gross for Bracket Lookup</b><br>"
-			f"Period: {self.start_date} → {self.end_date} "
-			f"({period_days} days | bimonthly={is_bimonthly})<br>"
+			f"Period: {self.start_date} → {self.end_date} ({period_days} days)<br>"
+			f"has_pair={pos.has_pair} | is_first={pos.is_first} | paired={pos.paired_name}<br>"
 			f"Current period gross_pay: ₱{current_gross:,.2f}<br>"
 			f"<b>Monthly pay used for SSS bracket: ₱{monthly_pay:,.2f}</b>"
-			+ (f"<br><br><b style='color:orange'>⚠ 1st-half estimate (×2). "
-			   f"2nd period will use actual combined gross.</b>"
-			   if is_bimonthly and getdate(self.start_date).day < 16 else ""),
+			+ ("<br><br><b style='color:orange'>⚠ 1st-period estimate (×2) — 2nd period slip not yet created.</b>"
+			   if not pos.has_pair and pos.is_first else
+			   "<br><br><b style='color:orange'>⚠ 1st-period — paired gross used for estimate.</b>"
+			   if pos.has_pair and pos.is_first else ""),
 			title="SSS — Monthly Pay",
 		)
 
@@ -2598,76 +2683,70 @@ class CustomSalarySlip(TransactionBase):
 		}
 
 		period_days = date_diff(self.end_date, self.start_date) + 1
-		is_bimonthly = period_days <= 16
-		is_first_half = is_bimonthly and getdate(self.start_date).day < 16
+		pos = self._detect_period_position()
 		mode = "Prorated" if prorated else "Non-Prorated"
 
 		frappe.msgprint(
 			f"<b>SSS DEBUG — calculate_sss_for_period</b><br>"
 			f"Slip: {self.name or '(unsaved)'}<br>"
 			f"Period: {self.start_date} → {self.end_date}<br>"
-			f"Period days: {period_days} | Bimonthly: {is_bimonthly} | 1st half: {is_first_half}<br>"
+			f"has_pair={pos.has_pair} | is_first={pos.is_first} | paired={pos.paired_name}<br>"
 			f"Mode: <b>{mode}</b> | contribution_type: {contribution_type}",
 			title="SSS Entry Point",
 		)
 
 		full_monthly_sss = self._get_full_monthly_sss(contribution_type)
 
-		# ── Non-bimonthly ────────────────────────────────────────────────────────
-		if not is_bimonthly:
+		# ── Standalone (truly no paired period) ─────────────────────────────────
+		if not pos.has_pair and not pos.is_first:
 			frappe.msgprint(
-				f"Non-bimonthly → full monthly SSS = <b>₱{full_monthly_sss:,.2f}</b>",
-				title="SSS — Non-Bimonthly",
+				f"Standalone → full monthly SSS = <b>₱{full_monthly_sss:,.2f}</b>",
+				title="SSS — Standalone",
 			)
 			return full_monthly_sss
 
-		# ── Bimonthly 1st half ───────────────────────────────────────────────────
-		if is_first_half:
+		# ── 1st period ───────────────────────────────────────────────────────────
+		if pos.is_first:
 			if not prorated:
 				frappe.msgprint(
-					"Bimonthly 1st half | Non-Prorated → ₱0. Full SSS on 2nd period.",
-					title="SSS — 1st Half (Non-Prorated)",
+					"1st period | Non-Prorated → ₱0. Full SSS on 2nd period.",
+					title="SSS — 1st Period (Non-Prorated)",
 				)
 				return 0.0
 
 			sss_1st = flt(full_monthly_sss / 2, 2)
 			frappe.msgprint(
-				f"Bimonthly 1st half | Prorated → full / 2<br>"
+				f"1st period | Prorated → full / 2<br>"
 				f"Full monthly SSS: ₱{full_monthly_sss:,.2f}<br>"
 				f"1st period = ₱{full_monthly_sss:,.2f} / 2 = <b>₱{sss_1st:,.2f}</b>",
-				title="SSS — 1st Half (Prorated)",
+				title="SSS — 1st Period (Prorated)",
 			)
 			return sss_1st
 
-		# ── Bimonthly 2nd half ───────────────────────────────────────────────────
+		# ── 2nd period ───────────────────────────────────────────────────────────
 		if not prorated:
 			frappe.msgprint(
-				f"Bimonthly 2nd half | Non-Prorated → full monthly SSS = <b>₱{full_monthly_sss:,.2f}</b>",
-				title="SSS — 2nd Half (Non-Prorated)",
+				f"2nd period | Non-Prorated → full monthly SSS = <b>₱{full_monthly_sss:,.2f}</b>",
+				title="SSS — 2nd Period (Non-Prorated)",
 			)
 			return full_monthly_sss
 
 		# Prorated 2nd half: remainder = full − what was actually deducted in 1st period
 		component_name = salary_component or _default_component_names.get(contribution_type, "")
-		first_period_start = get_first_day(self.start_date)
-		first_period_end = add_days(first_period_start, 14)
 
-		first_sss_result = frappe.db.sql(
-			"""
-			SELECT COALESCE(SUM(sd.amount), 0)
-			FROM `tabSalary Detail` sd
-			INNER JOIN `tabSalary Slip` ss ON ss.name = sd.parent
-			WHERE ss.employee    = %s
-			  AND ss.start_date  = %s
-			  AND ss.end_date    = %s
-			  AND ss.docstatus  != 2
-			  AND ss.name       != %s
-			  AND sd.parentfield = 'deductions'
-			  AND sd.salary_component = %s
-			""",
-			(self.employee, first_period_start, first_period_end, self.name, component_name),
-		)
-		first_sss = flt(first_sss_result[0][0]) if first_sss_result else 0.0
+		first_sss = 0.0
+		if pos.paired_name:
+			first_sss_result = frappe.db.sql(
+				"""
+				SELECT COALESCE(SUM(sd.amount), 0)
+				FROM `tabSalary Detail` sd
+				WHERE sd.parent           = %s
+				  AND sd.parentfield      = 'deductions'
+				  AND sd.salary_component = %s
+				""",
+				(pos.paired_name, component_name),
+			)
+			first_sss = flt(first_sss_result[0][0]) if first_sss_result else 0.0
 
 		second_period_sss = max(flt(full_monthly_sss - first_sss, 2), 0.0)
 
@@ -2689,29 +2768,11 @@ class CustomSalarySlip(TransactionBase):
 		return self._get_full_monthly_sss(contribution_type)
 
 	def _get_first_period_pay(self, current_period_pay):
-		"""Deprecated — kept for safety. SSS now uses Salary Detail query directly."""
-		first_period_start = get_first_day(self.start_date)
-		first_period_end = add_days(first_period_start, 14)
-
-		first_slip = frappe.db.get_value(
-			"Salary Slip",
-			{
-				"employee": self.employee,
-				"start_date": first_period_start,
-				"end_date": first_period_end,
-				"docstatus": ("!=", 2),
-				"name": ("!=", self.name),
-			},
-			["gross_pay", "basic_pay"],
-			order_by="docstatus desc",
-			as_dict=True,
-		)
-
-		if not first_slip:
+		"""Deprecated — kept for safety. SSS now uses _get_paired_period_slip directly."""
+		result = self._get_paired_period_slip(["gross_pay", "basic_pay"])
+		if not result:
 			return 0
-
-		first_basic = flt(first_slip.get("basic_pay") or 0)
-		return first_basic
+		return flt(result.get("basic_pay") or 0)
 
 	def calculate_withholding_tax(self, adjustment=0):
 		"""
@@ -2731,23 +2792,22 @@ class CustomSalarySlip(TransactionBase):
 			self.set_salary_structure_assignment()
 
 		period_days = date_diff(self.end_date, self.start_date) + 1
-		is_bimonthly = period_days <= 16
-		is_first_half = is_bimonthly and getdate(self.start_date).day < 16
+		pos = self._detect_period_position()
 
 		frappe.msgprint(
 			f"<b>WTAX DEBUG - Start</b><br>"
 			f"Slip: {self.name}<br>"
 			f"Start: {self.start_date} | End: {self.end_date}<br>"
-			f"Period days: {period_days} | Bimonthly: {is_bimonthly}<br>"
-			f"Is 1st Half: {is_first_half}",
+			f"Period days: {period_days}<br>"
+			f"has_pair={pos.has_pair} | is_first={pos.is_first} | paired={pos.paired_name}",
 			title="WTAX Step 1 - Period Detection"
 		)
 
 		# 1st period — no withholding, collected on 2nd period
-		if is_first_half:
+		if pos.is_first:
 			frappe.msgprint(
-				"Returning 0 — this is the 1st half of bimonthly payroll.",
-				title="WTAX Step 1 - Skipped (1st Half)"
+				"Returning 0 — this is the 1st period of a paired payroll.",
+				title="WTAX Step 1 - Skipped (1st Period)"
 			)
 			return 0
 
@@ -2781,11 +2841,11 @@ class CustomSalarySlip(TransactionBase):
 			title="WTAX Step 2 - 2nd Period Gross"
 		)
 
-		# For bimonthly 2nd half: fetch 1st period from DB
+		# For paired 2nd period: fetch 1st period from DB
 		gross_1st = 0.0
 		first_deductions = 0.0
 
-		if is_bimonthly:
+		if pos.has_pair and not pos.is_first:
 			first_half = self._get_first_half_taxable_data()
 			if first_half:
 				gross_1st = flt(first_half.get("gross_pay", 0))
@@ -2881,31 +2941,17 @@ class CustomSalarySlip(TransactionBase):
 		return flt(total_tax, 2)
 
 	def _get_first_half_taxable_data(self):
-		from frappe.utils import get_first_day, add_days
-
-		month_start = get_first_day(self.start_date)
-		first_half_end = add_days(month_start, 14)  # adjust if your 1st half ends on different day
-
-		first_slip = frappe.get_all(
-			"Salary Slip",
-			filters={
-				"employee": self.employee,
-				"start_date": [">=", month_start],
-				"end_date": ["<=", first_half_end],
-				"docstatus": ("!=", 2),
-				"name": ["!=", self.name],
-			},
-			fields=["name", "gross_pay"],
-			order_by="end_date desc",
-			limit=1
-		)
-
-		if not first_slip:
-			frappe.log_error(title="WTAX DEBUG - No 1st Half", message="No previous slip found")
+		"""
+		Fetches gross pay and statutory deductions from the paired (1st) period slip.
+		Uses _get_paired_period_slip — works for any cutoff pattern, not just 1-15.
+		"""
+		paired = self._get_paired_period_slip(["name", "gross_pay"])
+		if not paired:
+			frappe.log_error(title="WTAX DEBUG - No Paired Slip", message=f"No paired slip found for {self.employee} paired to {self.start_date}-{self.end_date}")
 			return None
 
-		slip_name = first_slip[0].name
-		gross_pay = flt(first_slip[0].gross_pay or 0)
+		slip_name = paired.name
+		gross_pay = flt(paired.gross_pay or 0)
 
 		details = frappe.get_all(
 			"Salary Detail",
@@ -2962,86 +3008,77 @@ class CustomSalarySlip(TransactionBase):
 
 		Formula:  max(₱250, 0.05 × monthly_basic × 0.5)
 		"""
+		pos = self._detect_period_position()
 		period_days = date_diff(self.end_date, self.start_date) + 1
-		is_bimonthly = period_days <= 16
 		current_basic = flt(self.basic_pay or 0)
 
 		frappe.msgprint(
 			f"<b>PHIC DEBUG — calculate_full_monthly_phic</b><br>"
 			f"Slip: {self.name or '(unsaved)'}<br>"
-			f"Period: {self.start_date} → {self.end_date} "
-			f"({period_days} days | bimonthly={is_bimonthly})<br>"
+			f"Period: {self.start_date} → {self.end_date} ({period_days} days)<br>"
+			f"has_pair={pos.has_pair} | is_first={pos.is_first} | paired={pos.paired_name}<br>"
 			f"self.basic_pay (current period): ₱{current_basic:,.2f}",
 			title="PHIC Step 1 — Period Detection",
 		)
 
-		if not is_bimonthly:
-			# Monthly / weekly / fortnightly — current basic IS the full-month basic
-			monthly_basic = current_basic
-
-			frappe.msgprint(
-				f"Non-bimonthly payroll → monthly_basic = self.basic_pay = ₱{monthly_basic:,.2f}",
-				title="PHIC Step 2 — Non-Bimonthly",
-			)
-		else:
-			is_first_half = getdate(self.start_date).day < 16
-
-			if is_first_half:
-				# 1st half: the 2nd-period slip doesn't exist yet so we cannot look up the
-				# combined monthly basic. Use current period's basic only.
-				# This path is hit when calculate_net_pay sets monthly_phic_slip (display).
-				# The actual prorated deduction via ph_phic() / calculate_phic_for_period
-				# does NOT call this method on the 1st half — it computes 0.025 × basic directly.
+		if not pos.has_pair:
+			if pos.is_first:
+				# Short period, 2nd slip not yet created — use current only for display
 				monthly_basic = current_basic
-
 				frappe.msgprint(
-					f"Bimonthly 1st half → 2nd period not yet known.<br>"
-					f"monthly_basic = current basic only = ₱{monthly_basic:,.2f}<br>"
-					f"(Used for monthly_phic_slip display only — actual deduction handled separately)",
-					title="PHIC Step 2 — Bimonthly 1st Half",
+					f"1st period (2nd not yet created) → monthly_basic = current basic = ₱{monthly_basic:,.2f}",
+					title="PHIC Step 2 — 1st Period (No Pair Yet)",
 				)
 			else:
-				# 2nd half: combine current + 1st-period basic from Salary Detail
-				first_period_start = get_first_day(self.start_date)
-				first_period_end = add_days(first_period_start, 14)
-
+				# True standalone
+				monthly_basic = current_basic
 				frappe.msgprint(
-					f"Bimonthly 2nd half → fetching 1st-period basic from Salary Detail<br>"
-					f"Looking for slip: employee={self.employee} | "
-					f"start={first_period_start} | end={first_period_end}",
-					title="PHIC Step 2 — Fetching 1st Period",
+					f"Standalone → monthly_basic = self.basic_pay = ₱{monthly_basic:,.2f}",
+					title="PHIC Step 2 — Standalone",
 				)
+		elif pos.is_first:
+			# 1st period: 2nd-period slip not yet known.
+			# Use current only — used for monthly_phic_slip display.
+			monthly_basic = current_basic
+			frappe.msgprint(
+				f"1st period → 2nd period not yet known.<br>"
+				f"monthly_basic = current basic only = ₱{monthly_basic:,.2f}<br>"
+				f"(Used for monthly_phic_slip display only)",
+				title="PHIC Step 2 — 1st Period",
+			)
+		else:
+			# 2nd period: combine current + 1st-period basic from Salary Detail
+			frappe.msgprint(
+				f"2nd period → fetching 1st-period basic from Salary Detail<br>"
+				f"Paired slip: {pos.paired_name or 'NOT FOUND'}",
+				title="PHIC Step 2 — Fetching 1st Period",
+			)
 
-				# Query Salary Detail directly — more reliable than the slip-level basic_pay
-				# field which may not be committed to DB yet when this runs on the 2nd period.
+			first_basic = 0.0
+			if pos.paired_name:
 				result = frappe.db.sql(
 					"""
 					SELECT COALESCE(SUM(sd.amount), 0)
 					FROM `tabSalary Detail` sd
-					INNER JOIN `tabSalary Slip` ss ON ss.name = sd.parent
-					WHERE ss.employee        = %s
-					  AND ss.start_date      = %s
-					  AND ss.end_date        = %s
-					  AND ss.docstatus      != 2
-					  AND ss.name           != %s
-					  AND sd.parentfield     = 'earnings'
-					  AND sd.is_basic_pay    = 1
+					WHERE sd.parent      = %s
+					  AND sd.parentfield = 'earnings'
+					  AND sd.is_basic_pay = 1
 					""",
-					(self.employee, first_period_start, first_period_end, self.name),
+					(pos.paired_name,),
 				)
 				first_basic = flt(result[0][0]) if result else 0.0
 
-				monthly_basic = current_basic + first_basic
+			monthly_basic = current_basic + first_basic
 
-				frappe.msgprint(
-					f"<b>1st Period Basic (from Salary Detail):</b> ₱{first_basic:,.2f}<br>"
-					f"<b>2nd Period Basic (self.basic_pay):</b> ₱{current_basic:,.2f}<br>"
-					f"<b>Combined Monthly Basic:</b> ₱{monthly_basic:,.2f}"
-					+ ("<br><br><b style='color:red'>⚠ WARNING: 1st-period basic is ₱0 — "
-					   "no submitted/draft 1st-period slip found or no is_basic_pay rows.</b>"
-					   if first_basic == 0 else ""),
-					title="PHIC Step 3 — Combined Basic",
-				)
+			frappe.msgprint(
+				f"<b>1st Period Basic (from Salary Detail):</b> ₱{first_basic:,.2f}<br>"
+				f"<b>2nd Period Basic (self.basic_pay):</b> ₱{current_basic:,.2f}<br>"
+				f"<b>Combined Monthly Basic:</b> ₱{monthly_basic:,.2f}"
+				+ ("<br><br><b style='color:red'>⚠ WARNING: 1st-period basic is ₱0 — "
+				   "no submitted/draft 1st-period slip found or no is_basic_pay rows.</b>"
+				   if first_basic == 0 else ""),
+				title="PHIC Step 3 — Combined Basic",
+			)
 
 		monthly_phic_total = 0.05 * monthly_basic
 		monthly_phic_ee_share = max(250.0, monthly_phic_total * 0.5)
@@ -3082,8 +3119,7 @@ class CustomSalarySlip(TransactionBase):
 		  formula_prorated   : unchecked         <- framework prorated not used; lambda owns it
 		"""
 		period_days = date_diff(self.end_date, self.start_date) + 1
-		is_bimonthly = period_days <= 16
-		is_first_half = is_bimonthly and getdate(self.start_date).day < 16
+		pos = self._detect_period_position()
 		current_basic = flt(self.basic_pay or 0)
 		mode = "Prorated" if prorated else "Non-Prorated"
 
@@ -3091,77 +3127,67 @@ class CustomSalarySlip(TransactionBase):
 			f"<b>PHIC DEBUG - calculate_phic_for_period</b><br>"
 			f"Slip: {self.name or '(unsaved)'}<br>"
 			f"Period: {self.start_date} to {self.end_date}<br>"
-			f"Period days: {period_days} | Bimonthly: {is_bimonthly} | 1st half: {is_first_half}<br>"
+			f"has_pair={pos.has_pair} | is_first={pos.is_first} | paired={pos.paired_name}<br>"
 			f"Mode: <b>{mode}</b> | self.basic_pay: {current_basic:,.2f}",
 			title="PHIC Entry Point",
 		)
 
-		# Non-bimonthly: same result regardless of prorated flag
-		if not is_bimonthly:
-			frappe.msgprint("Non-bimonthly -> computing full monthly PHIC now.", title="PHIC - Non-Bimonthly")
+		if not pos.has_pair and not pos.is_first:
+			frappe.msgprint("Standalone → computing full monthly PHIC now.", title="PHIC - Standalone")
 			return self.calculate_full_monthly_phic()
 
-		# Bimonthly 1st half
-		if is_first_half:
+		if pos.is_first:
 			if not prorated:
 				frappe.msgprint(
-					"Bimonthly 1st half | Non-Prorated -> 0. Full PHIC collected on 2nd period.",
-					title="PHIC - 1st Half (Non-Prorated)",
+					"1st period | Non-Prorated → 0. Full PHIC collected on 2nd period.",
+					title="PHIC - 1st Period (Non-Prorated)",
 				)
 				return 0.0
 
-			# Prorated: raw 1st-period share, no floor
 			phic_1st = flt(0.025 * current_basic, 2)
 			frappe.msgprint(
-				f"Bimonthly 1st half | Prorated -> 0.025 x {current_basic:,.2f} = <b>{phic_1st:,.2f}</b><br>"
+				f"1st period | Prorated → 0.025 x {current_basic:,.2f} = <b>{phic_1st:,.2f}</b><br>"
 				f"(Floor 250 NOT applied here - applies to full monthly total only)",
-				title="PHIC - 1st Half (Prorated)",
+				title="PHIC - 1st Period (Prorated)",
 			)
 			return phic_1st
 
-		# Bimonthly 2nd half
+		# 2nd period
 		full_monthly_phic = self.calculate_full_monthly_phic()
 
 		if not prorated:
-			# Non-prorated: full monthly PHIC on 2nd period
 			frappe.msgprint(
-				f"Bimonthly 2nd half | Non-Prorated -> full monthly PHIC = <b>{full_monthly_phic:,.2f}</b>",
-				title="PHIC - 2nd Half (Non-Prorated)",
+				f"2nd period | Non-Prorated -> full monthly PHIC = <b>{full_monthly_phic:,.2f}</b>",
+				title="PHIC - 2nd Period (Non-Prorated)",
 			)
 			return full_monthly_phic
 
-		# Prorated 2nd half: remainder = full - what was deducted in 1st period
-		first_period_start = get_first_day(self.start_date)
-		first_period_end = add_days(first_period_start, 14)
-
-		first_phic_result = frappe.db.sql(
-			"""
-			SELECT COALESCE(SUM(sd.amount), 0)
-			FROM `tabSalary Detail` sd
-			INNER JOIN `tabSalary Slip` ss ON ss.name = sd.parent
-			WHERE ss.employee    = %s
-			  AND ss.start_date  = %s
-			  AND ss.end_date    = %s
-			  AND ss.docstatus  != 2
-			  AND ss.name       != %s
-			  AND sd.parentfield = 'deductions'
-			  AND sd.salary_component = 'PH - PHIC Contribution'
-			""",
-			(self.employee, first_period_start, first_period_end, self.name),
-		)
-		first_phic = flt(first_phic_result[0][0]) if first_phic_result else 0.0
+		# Prorated 2nd period: remainder = full - what was deducted in 1st period
+		first_phic = 0.0
+		if pos.paired_name:
+			first_phic_result = frappe.db.sql(
+				"""
+				SELECT COALESCE(SUM(sd.amount), 0)
+				FROM `tabSalary Detail` sd
+				WHERE sd.parent           = %s
+				  AND sd.parentfield      = 'deductions'
+				  AND sd.salary_component = 'PH - PHIC Contribution'
+				""",
+				(pos.paired_name,),
+			)
+			first_phic = flt(first_phic_result[0][0]) if first_phic_result else 0.0
 
 		second_period_phic = max(flt(full_monthly_phic - first_phic, 2), 0.0)
 
 		frappe.msgprint(
-			f"Bimonthly 2nd half | Prorated -> remainder<br>"
+			f"2nd period | Prorated -> remainder<br>"
 			f"Full monthly PHIC: {full_monthly_phic:,.2f}<br>"
 			f"1st period PHIC (from Salary Detail): {first_phic:,.2f}<br>"
 			f"2nd period = {full_monthly_phic:,.2f} - {first_phic:,.2f} = <b>{second_period_phic:,.2f}</b>"
 			+ (f"<br><br><b>WARNING: 1st-period PHIC is 0 in Salary Detail. "
 			   f"2nd period carries the full {full_monthly_phic:,.2f}.</b>"
 			   if first_phic == 0 else ""),
-			title="PHIC - 2nd Half (Prorated)",
+			title="PHIC - 2nd Period (Prorated)",
 		)
 
 		return second_period_phic
@@ -3206,68 +3232,57 @@ class CustomSalarySlip(TransactionBase):
 		gross_pay is read from the Salary Slip header (a standard persisted field),
 		unlike basic_pay which may not be flushed to DB yet.
 		"""
+		pos = self._detect_period_position()
 		period_days = date_diff(self.end_date, self.start_date) + 1
-		is_bimonthly = period_days <= 16
 		current_gross = flt(self.gross_pay or 0)
 
 		frappe.msgprint(
 			f"<b>HDMF DEBUG — calculate_full_monthly_hdmf</b><br>"
 			f"Slip: {self.name or '(unsaved)'}<br>"
-			f"Period: {self.start_date} → {self.end_date} "
-			f"({period_days} days | bimonthly={is_bimonthly})<br>"
+			f"Period: {self.start_date} → {self.end_date} ({period_days} days)<br>"
+			f"has_pair={pos.has_pair} | is_first={pos.is_first} | paired={pos.paired_name}<br>"
 			f"self.gross_pay (current period): ₱{current_gross:,.2f}",
 			title="HDMF Step 1 — Period Detection",
 		)
 
-		if not is_bimonthly:
-			monthly_gross = current_gross
-			frappe.msgprint(
-				f"Non-bimonthly → monthly_gross = self.gross_pay = ₱{monthly_gross:,.2f}",
-				title="HDMF Step 2 — Non-Bimonthly",
-			)
-		else:
-			is_first_half = getdate(self.start_date).day < 16
-
-			if is_first_half:
-				# Estimate full monthly as current × 2 (2nd period slip not yet available)
+		if not pos.has_pair:
+			if pos.is_first:
+				# Short period, 2nd slip not yet created — estimate monthly as ×2
 				monthly_gross = current_gross * 2
 				frappe.msgprint(
-					f"Bimonthly 1st half → estimate monthly_gross = "
-					f"₱{current_gross:,.2f} × 2 = ₱{monthly_gross:,.2f}<br>"
-					f"(Estimate only — actual 2nd-period gross not yet known)",
-					title="HDMF Step 2 — Bimonthly 1st Half (Estimate)",
+					f"1st period (2nd not yet created) → estimate monthly_gross = "
+					f"₱{current_gross:,.2f} × 2 = ₱{monthly_gross:,.2f}",
+					title="HDMF Step 2 — Estimate",
 				)
 			else:
-				# Fetch actual 1st-period gross_pay from the Salary Slip header
-				first_period_start = get_first_day(self.start_date)
-				first_period_end = add_days(first_period_start, 14)
-
-				first_gross = flt(
-					frappe.db.get_value(
-						"Salary Slip",
-						{
-							"employee": self.employee,
-							"start_date": first_period_start,
-							"end_date": first_period_end,
-							"docstatus": ("!=", 2),
-							"name": ("!=", self.name),
-						},
-						"gross_pay",
-						order_by="docstatus desc",
-					)
-					or 0
+				# True standalone
+				monthly_gross = current_gross
+				frappe.msgprint(
+					f"Standalone → monthly_gross = self.gross_pay = ₱{monthly_gross:,.2f}",
+					title="HDMF Step 2 — Standalone",
 				)
+		elif pos.is_first:
+			# Estimate: use paired gross if available (looked ahead), else ×2
+			monthly_gross = current_gross + (pos.paired_gross if pos.paired_gross else current_gross)
+			frappe.msgprint(
+				f"1st period → estimate monthly_gross = "
+				f"₱{current_gross:,.2f} + ₱{pos.paired_gross or current_gross:,.2f} = ₱{monthly_gross:,.2f}<br>"
+				f"(paired_gross={'actual' if pos.paired_gross else 'estimated ×2'})",
+				title="HDMF Step 2 — 1st Period",
+			)
+		else:
+				# 2nd period: use actual paired gross (already in pos)
+				first_gross = pos.paired_gross
 				monthly_gross = current_gross + first_gross
 
 				frappe.msgprint(
-					f"Bimonthly 2nd half → combined monthly gross<br>"
-					f"1st period gross_pay (from DB): ₱{first_gross:,.2f}<br>"
+					f"2nd period → combined monthly gross<br>"
+					f"1st period gross_pay (paired): ₱{first_gross:,.2f}<br>"
 					f"2nd period gross_pay (self.gross_pay): ₱{current_gross:,.2f}<br>"
 					f"<b>Combined monthly gross: ₱{monthly_gross:,.2f}</b>"
-					+ ("<br><br><b style='color:red'>⚠ WARNING: 1st-period gross is ₱0 — "
-					   "no submitted/draft 1st-period slip found.</b>"
+					+ ("<br><br><b style='color:red'>⚠ WARNING: 1st-period gross is ₱0.</b>"
 					   if first_gross == 0 else ""),
-					title="HDMF Step 2 — Bimonthly 2nd Half",
+					title="HDMF Step 2 — 2nd Period",
 				)
 
 		monthly_hdmf = self._hdmf_formula(monthly_gross)
@@ -3312,87 +3327,76 @@ class CustomSalarySlip(TransactionBase):
 		  formula_prorated   : unchecked
 		"""
 		period_days = date_diff(self.end_date, self.start_date) + 1
-		is_bimonthly = period_days <= 16
-		is_first_half = is_bimonthly and getdate(self.start_date).day < 16
+		pos = self._detect_period_position()
 		mode = "Prorated" if prorated else "Non-Prorated"
 
 		frappe.msgprint(
 			f"<b>HDMF DEBUG — calculate_hdmf_for_period</b><br>"
 			f"Slip: {self.name or '(unsaved)'}<br>"
 			f"Period: {self.start_date} → {self.end_date}<br>"
-			f"Period days: {period_days} | Bimonthly: {is_bimonthly} | 1st half: {is_first_half}<br>"
+			f"has_pair={pos.has_pair} | is_first={pos.is_first} | paired={pos.paired_name}<br>"
 			f"Mode: <b>{mode}</b> | self.gross_pay: ₱{flt(self.gross_pay or 0):,.2f}",
 			title="HDMF Entry Point",
 		)
 
-		# ── Non-bimonthly ────────────────────────────────────────────────────────
-		if not is_bimonthly:
-			frappe.msgprint("Non-bimonthly → full monthly HDMF.", title="HDMF — Non-Bimonthly")
+		if not pos.has_pair and not pos.is_first:
+			frappe.msgprint("Standalone → full monthly HDMF.", title="HDMF — Standalone")
 			return self.calculate_full_monthly_hdmf()
 
-		# ── Bimonthly 1st half ───────────────────────────────────────────────────
-		if is_first_half:
+		if pos.is_first:
 			if not prorated:
 				frappe.msgprint(
-					"Bimonthly 1st half | Non-Prorated → ₱0. Full HDMF on 2nd period.",
-					title="HDMF — 1st Half (Non-Prorated)",
+					"1st period | Non-Prorated → ₱0. Full HDMF on 2nd period.",
+					title="HDMF — 1st Period (Non-Prorated)",
 				)
 				return 0.0
 
-			# Prorated: full_monthly_hdmf / 2
 			full_monthly_hdmf = self.calculate_full_monthly_hdmf()
 			hdmf_1st = flt(full_monthly_hdmf / 2, 2)
-
 			frappe.msgprint(
-				f"Bimonthly 1st half | Prorated → full monthly / 2<br>"
+				f"1st period | Prorated → full monthly / 2<br>"
 				f"Full monthly HDMF: ₱{full_monthly_hdmf:,.2f}<br>"
 				f"1st period = ₱{full_monthly_hdmf:,.2f} / 2 = <b>₱{hdmf_1st:,.2f}</b>",
-				title="HDMF — 1st Half (Prorated)",
+				title="HDMF — 1st Period (Prorated)",
 			)
 			return hdmf_1st
 
-		# ── Bimonthly 2nd half ───────────────────────────────────────────────────
+		# ── 2nd period ───────────────────────────────────────────────────────────
 		full_monthly_hdmf = self.calculate_full_monthly_hdmf()
 
 		if not prorated:
 			frappe.msgprint(
-				f"Bimonthly 2nd half | Non-Prorated → full monthly HDMF = <b>₱{full_monthly_hdmf:,.2f}</b>",
-				title="HDMF — 2nd Half (Non-Prorated)",
+				f"2nd period | Non-Prorated → full monthly HDMF = <b>₱{full_monthly_hdmf:,.2f}</b>",
+				title="HDMF — 2nd Period (Non-Prorated)",
 			)
 			return full_monthly_hdmf
 
-		# Prorated 2nd half: remainder = full − what was actually deducted in 1st period
-		first_period_start = get_first_day(self.start_date)
-		first_period_end = add_days(first_period_start, 14)
-
-		first_hdmf_result = frappe.db.sql(
-			"""
-			SELECT COALESCE(SUM(sd.amount), 0)
-			FROM `tabSalary Detail` sd
-			INNER JOIN `tabSalary Slip` ss ON ss.name = sd.parent
-			WHERE ss.employee    = %s
-			  AND ss.start_date  = %s
-			  AND ss.end_date    = %s
-			  AND ss.docstatus  != 2
-			  AND ss.name       != %s
-			  AND sd.parentfield = 'deductions'
-			  AND sd.salary_component = 'PH - HDMF Contribution'
-			""",
-			(self.employee, first_period_start, first_period_end, self.name),
-		)
-		first_hdmf = flt(first_hdmf_result[0][0]) if first_hdmf_result else 0.0
+		# Prorated 2nd period: remainder = full − what was actually deducted in 1st period
+		first_hdmf = 0.0
+		if pos.paired_name:
+			first_hdmf_result = frappe.db.sql(
+				"""
+				SELECT COALESCE(SUM(sd.amount), 0)
+				FROM `tabSalary Detail` sd
+				WHERE sd.parent           = %s
+				  AND sd.parentfield      = 'deductions'
+				  AND sd.salary_component = 'PH - HDMF Contribution'
+				""",
+				(pos.paired_name,),
+			)
+			first_hdmf = flt(first_hdmf_result[0][0]) if first_hdmf_result else 0.0
 
 		second_period_hdmf = max(flt(full_monthly_hdmf - first_hdmf, 2), 0.0)
 
 		frappe.msgprint(
-			f"Bimonthly 2nd half | Prorated → remainder<br>"
+			f"2nd period | Prorated → remainder<br>"
 			f"Full monthly HDMF: ₱{full_monthly_hdmf:,.2f}<br>"
 			f"1st period HDMF (from Salary Detail): ₱{first_hdmf:,.2f}<br>"
 			f"2nd period = ₱{full_monthly_hdmf:,.2f} − ₱{first_hdmf:,.2f} = <b>₱{second_period_hdmf:,.2f}</b>"
 			+ (f"<br><br><b style='color:orange'>⚠ 1st-period HDMF is ₱0 in Salary Detail. "
 			   f"2nd period carries the full ₱{full_monthly_hdmf:,.2f}.</b>"
 			   if first_hdmf == 0 else ""),
-			title="HDMF — 2nd Half (Prorated)",
+			title="HDMF — 2nd Period (Prorated)",
 		)
 
 		return second_period_hdmf
