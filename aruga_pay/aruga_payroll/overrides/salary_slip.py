@@ -859,6 +859,12 @@ class CustomSalarySlip(TransactionBase):
 		if self.salary_structure:
 			self.calculate_component_amounts("earnings")
 
+		# CUSTOM V2: inject attendance-based OT after structure earnings are set
+		# but before gross_pay is computed so OT is included in gross.
+		# Skipped during simulate_component runs (flag set by simulate_component).
+		if not getattr(self.flags, "_is_simulation", False):
+			self.calculate_overtime()
+
 		set_gross_pay_and_base_gross_pay()
 
 		if self.salary_structure:
@@ -3431,6 +3437,202 @@ class CustomSalarySlip(TransactionBase):
 				gross += flt(e.amount)
 
 		return flt(gross / 12)
+
+	def calculate_overtime(self):
+		"""
+		V2 Attendance-Based Overtime — Structure-Gated.
+
+		PHASE 1 — GUARDRAIL (presence check):
+		  Before any math runs, the engine checks whether the target OT salary
+		  component exists as a row in the active Salary Structure.
+		  If it is MISSING → the engine stops immediately. Nothing is calculated,
+		  nothing is appended, no error is raised.
+		  If it IS present → proceed to Phase 2.
+
+		  This means the Salary Structure is the single master switch.
+		  Add "PH - OT" to the structure → OT is calculated.
+		  Remove it → OT is completely disabled for that employee / grade.
+
+		PHASE 2 — CALCULATION:
+		  Sweeps submitted Attendance records in the slip date range.
+		  Reads the overtime_details child table on each Attendance record.
+		  Multiple overtime types map to the same Salary Component bucket:
+
+		    March 1 | DVA Overtime (125%)          → PH - OT  ₱239.63
+		    March 2 | DVA Overtime (125%)          → PH - OT  ₱239.63
+		    March 7 | DVA Rest Day Premium (130%)  → PH - OT  ₱249.21
+		    March 7 | Special Holiday OT (169%)   → PH - OT  ₱323.97
+		    ──────────────────────────────────────────────────────────
+		    PH - OT total                          → ₱1,052.44
+
+		PHASE 3 — UPDATE (not inject):
+		  Finds the existing earning row (added by calculate_component_amounts with
+		  amount = 0) and sets its amount to the computed total.
+		  Flags (is_basic_pay, is_13th_month_pay_applicable, is_tax_applicable, etc.)
+		  are read from the Salary Structure row — NOT hardcoded here.
+		  This gives you full control per structure.
+
+		SALARY STRUCTURE ROW SETUP:
+		  Salary Component        : PH - OT (or any OT component)
+		  Amount                  : 0
+		  Amount Based on Formula : unchecked  (no formula needed)
+		  Depends on Payment Days : unchecked  (actual hours, not prorated)
+		  Remove if Zero Valued   : unchecked  ← REQUIRED — row must stay for Phase 3
+		  is_basic_pay            : your choice (usually unchecked for OT)
+		  is_13th_month_pay_applicable : your choice (DOLE includes OT in 13th month)
+
+		OVERTIME TYPES DOCTYPE:
+		  name             → must match overtime_details.overtime_type exactly
+		  salary_component → must exist as a row in the Salary Structure
+		  pay_rate         → multiplier as percentage (125 = 125% = 1.25×)
+
+		FORMULA: hourly_rate × hours × (pay_rate / 100)
+		  hourly_rate comes from calculate_salary_structure_rates() — works for
+		  all rate types (Hourly, Daily, Monthly, Yearly).
+
+		SIMULATION GUARD:
+		  Returns immediately if self.flags._is_simulation = True.
+
+		BIMONTHLY:
+		  No proration needed. OT is tied to specific attendance_dates which
+		  fall naturally within the cutoff's date range.
+		"""
+		if getattr(self.flags, "_is_simulation", False):
+			return
+
+		# ── Phase 1: Guardrail — verify OT component exists in Salary Structure ──
+		if not getattr(self, "_salary_structure_doc", None):
+			self.set_salary_structure_doc()
+
+		# Build map: salary_component → structure row (for flags)
+		all_ot_components = set(frappe.get_all("Overtime Types", pluck="salary_component"))
+		structure_ot_map = {
+			row.salary_component: row
+			for row in self._salary_structure_doc.get("earnings")
+			if row.salary_component in all_ot_components
+		}
+
+		if not structure_ot_map:
+			# No OT component in this Salary Structure — stop immediately
+			return
+
+		# ── Get hourly rate from SSA ─────────────────────────────────────────────
+		if not hasattr(self, "_salary_structure_assignment"):
+			self.set_salary_structure_assignment()
+
+		rates = self.calculate_salary_structure_rates(self._salary_structure_assignment)
+		hourly_rate = flt(rates.get("hourly_rate") or 0)
+
+		if not hourly_rate:
+			frappe.log_error(
+				title="OT Calc — No Hourly Rate",
+				message=(
+					f"Employee {self.employee} — no hourly_rate from assignment "
+					f"{self._salary_structure_assignment.name}. "
+					f"Check: base, rate_type, daily_hours, days_of_work_per_year."
+				),
+			)
+			return
+
+		# ── Phase 2: Sweep attendance → accumulate per salary_component ─────────
+		attendance_list = frappe.get_all(
+			"Attendance",
+			filters={
+				"employee":        self.employee,
+				"attendance_date": ["between", [self.start_date, self.end_date]],
+				"docstatus":       1,
+			},
+			pluck="name",
+		)
+
+		if not attendance_list:
+			return
+
+		# { salary_component: { amount, hours, lines[] } }
+		ot_buckets = {}
+
+		for att_name in attendance_list:
+			attendance = frappe.get_doc("Attendance", att_name)
+
+			if not attendance.get("overtime_details"):
+				continue
+
+			for row in attendance.overtime_details:
+				if not row.overtime_type or not flt(row.hours):
+					continue
+
+				ot_type = frappe.get_cached_doc("Overtime Types", row.overtime_type)
+				salary_component = ot_type.salary_component
+				pay_rate = flt(ot_type.pay_rate)
+
+				if not salary_component or not pay_rate:
+					continue
+
+				# Skip if this component is not in the structure (guardrail)
+				if salary_component not in structure_ot_map:
+					continue
+
+				amount = hourly_rate * flt(row.hours) * (pay_rate / 100.0)
+
+				if salary_component not in ot_buckets:
+					ot_buckets[salary_component] = {"amount": 0.0, "hours": 0.0, "lines": []}
+
+				ot_buckets[salary_component]["amount"] += amount
+				ot_buckets[salary_component]["hours"]  += flt(row.hours)
+				ot_buckets[salary_component]["lines"].append(
+					f"{attendance.attendance_date} | {row.overtime_type}: "
+					f"{flt(row.hours):.2f}h × ₱{hourly_rate:,.2f} × {pay_rate}% = ₱{amount:,.2f}"
+				)
+
+		if not ot_buckets:
+			return
+
+		# ── Phase 3: Update existing earning rows — flags from structure row ─────
+		for salary_component, data in ot_buckets.items():
+			total = flt(data["amount"], 2)
+			if not total:
+				continue
+
+			# Find the existing row placed by calculate_component_amounts
+			existing_row = next(
+				(e for e in self.earnings if e.salary_component == salary_component),
+				None,
+			)
+
+			if existing_row:
+				# Update in place — preserves all flags set on the structure row
+				existing_row.amount = total
+				existing_row.default_amount = total
+
+			else:
+				# Row was removed (e.g. remove_if_zero_valued was checked on the component).
+				# Re-append using flags from the Salary Structure row — not hardcoded.
+				struct_row = structure_ot_map[salary_component]
+				self.append("earnings", {
+					"salary_component":                        salary_component,
+					"abbr":                                    struct_row.abbr,
+					"amount":                                  total,
+					"default_amount":                          total,
+					"additional_amount":                       0.0,
+					"depends_on_payment_days":                 0,
+					"is_tax_applicable":                       cint(struct_row.is_tax_applicable),
+					"is_basic_pay":                            cint(struct_row.get("is_basic_pay", 0)),
+					"is_13th_month_pay_applicable":            cint(struct_row.get("is_13th_month_pay_applicable", 0)),
+					"do_not_include_in_total":                 cint(struct_row.do_not_include_in_total),
+					"statistical_component":                   cint(struct_row.statistical_component),
+					"deduct_full_tax_on_selected_payroll_date": cint(struct_row.deduct_full_tax_on_selected_payroll_date),
+				})
+
+			# Debug log
+			frappe.msgprint(
+				f"<b>OT — {salary_component}</b><br>"
+				f"Hourly rate (SSA): ₱{hourly_rate:,.2f}<br>"
+				f"Total hours: {data['hours']:.2f}h<br><br>"
+				f"<b>Breakdown:</b><br>"
+				+ "<br>".join(f"&nbsp;&nbsp;{line}" for line in data["lines"])
+				+ f"<br><br><b>Component total: ₱{total:,.2f}</b>",
+				title=f"OT — {salary_component}",
+			)
 
 
 # -----------------------------------------------------------------------

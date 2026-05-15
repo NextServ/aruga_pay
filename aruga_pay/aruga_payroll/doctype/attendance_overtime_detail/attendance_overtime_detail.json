@@ -1,0 +1,60 @@
+{
+ "actions": [],
+ "autoname": "overtime_type - .####",
+ "creation": "2026-05-15 12:27:51.527842",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "overtime_type",
+  "hours",
+  "salary_component",
+  "pay_rate"
+ ],
+ "fields": [
+  {
+   "fieldname": "hours",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Hours"
+  },
+  {
+   "fetch_from": "overtime_type.salary_component",
+   "fieldname": "salary_component",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Salary Component",
+   "options": "Salary Component"
+  },
+  {
+   "fetch_from": "overtime_type.pay_rate",
+   "fieldname": "pay_rate",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Pay Rate"
+  },
+  {
+   "fieldname": "overtime_type",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Overtime Type",
+   "options": "Overtime Types"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-05-15 13:36:00.666717",
+ "modified_by": "Administrator",
+ "module": "Aruga Payroll",
+ "name": "Attendance Overtime Detail",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
