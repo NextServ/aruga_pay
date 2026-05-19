@@ -1,4 +1,4 @@
-__version__ = "0.0.12"
+__version__ = "0.0.13"
 
 # # Apply patch automatically on app load
 # from .patches.salary_slip_patch import patch_salary_slip
