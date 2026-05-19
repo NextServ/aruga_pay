@@ -878,6 +878,8 @@ class CustomSalarySlip(TransactionBase):
 
 		if not self.monthly_sss_slip:
 			self.monthly_sss_slip = self._get_monthly_sss_for_display()
+		
+		self.accrued_13th_month_pay = self.calculate_13th_month_pay()
 
 		set_loan_repayment(self)
 
@@ -1727,6 +1729,7 @@ class CustomSalarySlip(TransactionBase):
 				"variable_based_on_taxable_salary",
 				"exempted_from_income_tax",
 				"is_basic_pay",                  # CUSTOM
+				"is_13th_month_pay_applicable",  
 			):
 				component_row.set(attr, component_data.get(attr))
 
@@ -3672,6 +3675,7 @@ def get_salary_component_data(component):
 			"is_flexible_benefit",
 			"variable_based_on_taxable_salary",
 			"accrual_component",            # CUSTOM
+			"is_13th_month_pay_applicable",  
 		),
 		as_dict=1,
 		cache=True,
