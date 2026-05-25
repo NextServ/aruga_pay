@@ -58,6 +58,9 @@ def create_ph_salary_components():
         doc.is_13th_month_pay_applicable = cint(data.get("is_13th_month_pay_applicable", 0))
         doc.is_basic_pay = cint(data.get("is_basic_pay", 0))
 
+        # Required for WTAX Case B: subtract SSS/PHIC/HDMF from prior slips' taxable income
+        doc.exempted_from_income_tax = cint(data.get("exempted_from_income_tax", 0))
+
         # Set description (proration instructions visible in UI)
         if data.get("description"):
             doc.description = data["description"]
@@ -561,7 +564,8 @@ def _get_salary_components():
 		#     ph_sss_er(prorated=True) → SSS ER prorated
 		#     ph_sss_ec()          → SSS EC non-prorated
 		#     ph_sss_ec(prorated=True) → SSS EC prorated
-		#     ph_wtax()            → Withholding Tax (always non-prorated, 0 on 1st half)
+		#     ph_wtax()            → WTAX non-prorated (0 on 1st, full cumulative on 2nd)
+		#     ph_wtax(True)        → WTAX prorated     (estimated tax on 1st, true-up on 2nd)
 		#
 		{
 			"name": "PH - PHIC Contribution",
@@ -586,7 +590,8 @@ def _get_salary_components():
 			"formula_effectivity": "Period",
 			"formula_prorated": 0,
 			"statistical_component": 0,
-			"is_tax_applicable": 1,
+			"exempted_from_income_tax": 1,  # Pre-tax deduction — reduces BIR taxable income
+			                                # Required for WTAX Case B to subtract from prior slips
 			"is_basic_pay": 0,
 			"is_13th_month_pay_applicable": 0,
 			"depends_on_payment_days": 0,
@@ -611,7 +616,6 @@ def _get_salary_components():
 			"formula_effectivity": "Period",
 			"formula_prorated": 0,
 			"statistical_component": 1,
-			"is_tax_applicable": 1,
 			"is_basic_pay": 0,
 			"is_13th_month_pay_applicable": 0,
 			"depends_on_payment_days": 0,
@@ -642,7 +646,8 @@ def _get_salary_components():
 			"formula_effectivity": "Period",
 			"formula_prorated": 0,
 			"statistical_component": 0,
-			"is_tax_applicable": 1,
+			"exempted_from_income_tax": 1,  # Pre-tax deduction — reduces BIR taxable income
+			                                # Required for WTAX Case B to subtract from prior slips
 			"is_basic_pay": 0,
 			"is_13th_month_pay_applicable": 0,
 			"depends_on_payment_days": 0,
@@ -666,7 +671,6 @@ def _get_salary_components():
 			"formula_effectivity": "Period",
 			"formula_prorated": 0,
 			"statistical_component": 1,
-			"is_tax_applicable": 1,
 			"is_basic_pay": 0,
 			"is_13th_month_pay_applicable": 0,
 			"depends_on_payment_days": 0,
@@ -677,15 +681,14 @@ def _get_salary_components():
 			"salary_component_abbr": "PH_SSS",
 			"type": "Deduction",
 			# Default: non-prorated.
-			# SSS bracket uses assignment.base for Monthly-rate employees and
-			# combined gross_pay for Daily/Hourly employees.
+			# SSS bracket uses combined monthly gross_pay for ALL rate types.
 			# Change to ph_sss(prorated=True) in your salary structure for prorated.
 			"formula": "ph_sss()",
 			"description": (
 				"SSS Employee Contribution.\n\n"
-				"Bracket lookup uses:\n"
-				"  Monthly rate  → assignment.base (contracted salary, unaffected by LWP)\n"
-				"  Daily/Hourly  → combined gross_pay from both cutoffs\n\n"
+				"Bracket lookup uses combined monthly gross_pay for all rate types\n"
+				"(Hourly, Daily, Monthly, Yearly). The Monthly Salary Credit (MSC) is\n"
+				"based on total gross compensation including OT and allowances.\n\n"
 				"PRORATION — change formula in your Salary Structure (not here):\n"
 				"  Non-prorated (default): ph_sss()\n"
 				"    → 1st period: ₱0  |  2nd period: full monthly SSS\n"
@@ -701,7 +704,8 @@ def _get_salary_components():
 			"formula_effectivity": "Period",
 			"formula_prorated": 0,
 			"statistical_component": 0,
-			"is_tax_applicable": 1,
+			"exempted_from_income_tax": 1,  # Pre-tax deduction — reduces BIR taxable income
+			                                # Required for WTAX Case B to subtract from prior slips
 			"is_basic_pay": 0,
 			"is_13th_month_pay_applicable": 0,
 			"depends_on_payment_days": 0,
@@ -725,7 +729,6 @@ def _get_salary_components():
 			"formula_effectivity": "Period",
 			"formula_prorated": 0,
 			"statistical_component": 1,
-			"is_tax_applicable": 1,
 			"is_basic_pay": 0,
 			"is_13th_month_pay_applicable": 0,
 			"depends_on_payment_days": 0,
@@ -749,7 +752,6 @@ def _get_salary_components():
 			"formula_effectivity": "Period",
 			"formula_prorated": 0,
 			"statistical_component": 1,
-			"is_tax_applicable": 1,
 			"is_basic_pay": 0,
 			"is_13th_month_pay_applicable": 0,
 			"depends_on_payment_days": 0,
@@ -759,25 +761,26 @@ def _get_salary_components():
 			"salary_component": "PH - Withholding Tax",
 			"salary_component_abbr": "PH_WTAX",
 			"type": "Deduction",
-			# WTax is always non-prorated by design:
-			#   1st half → ₱0 (guard inside the lambda)
-			#   2nd half → full tax on combined monthly taxable income
-			# No prorated=True option — withholding tax is collected once per month.
+			# Non-prorated (default): 0 on 1st period, full cumulative tax on 2nd period.
+			# Prorated: estimated tax on 1st period, true-up on 2nd period.
+			# Change formula in your Salary Structure (not here) to switch modes.
 			"formula": "ph_wtax()",
 			"description": (
 				"BIR Withholding Tax on Compensation.\n\n"
-				"Always non-prorated — the lambda returns ₱0 on the 1st bimonthly half\n"
-				"and computes the full monthly tax on the 2nd half using both periods' gross.\n\n"
-				"There is no prorated option for WTax.\n\n"
-				"formula_effectivity must always be 'Period'.\n"
-				"formula_prorated checkbox has NO effect."
+				"PRORATION — change formula in your Salary Structure (not here):\n"
+				"  Non-prorated (default): ph_wtax()\n"
+				"    → 1st period: ₱0\n"
+				"    → 2nd period: full cumulative tax on combined monthly taxable income\n"
+				"       (cumulative gross − SSS − PHIC − HDMF from all periods this month)\n\n"
+				"  Prorated: ph_wtax(True)\n"
+				"    → 1st period: estimated tax (projected monthly gross × 2, apply slab, ÷ 2)\n"
+				"    → 2nd period: true-up (total monthly tax − tax already paid on 1st period)\n\n"
 			),
 			"amount_based_on_formula": 1,
 			"formula_based_on_attendance": 0,
 			"formula_effectivity": "Period",
 			"formula_prorated": 0,
 			"statistical_component": 0,
-			"is_tax_applicable": 0,
 			"is_basic_pay": 0,
 			"is_13th_month_pay_applicable": 0,
 			"depends_on_payment_days": 0,
