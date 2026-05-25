@@ -859,6 +859,12 @@ class CustomSalarySlip(TransactionBase):
 		if self.salary_structure:
 			self.calculate_component_amounts("earnings")
 
+		# CUSTOM V2: inject attendance-based OT after structure earnings are set
+		# but before gross_pay is computed so OT is included in gross.
+		# Skipped during simulate_component runs (flag set by simulate_component).
+		if not getattr(self.flags, "_is_simulation", False):
+			self.calculate_overtime()
+
 		set_gross_pay_and_base_gross_pay()
 
 		if self.salary_structure:
@@ -872,6 +878,11 @@ class CustomSalarySlip(TransactionBase):
 
 		if not self.monthly_sss_slip:
 			self.monthly_sss_slip = self._get_monthly_sss_for_display()
+
+		# 13th month accrual tracker — shows the running YTD total on every slip.
+		# Lets HR and the employee see how much 13th month has accumulated so far.
+		# Updated on every save (not guarded by "if not") so it stays current.
+		self.accrued_13th_month_pay = self.calculate_13th_month_pay()
 
 		set_loan_repayment(self)
 
@@ -1439,7 +1450,7 @@ class CustomSalarySlip(TransactionBase):
 			"ph_sss_ec": lambda pay=None, prorated=False: self.calculate_sss_for_period(
 				"employee_compensation", prorated
 			),
-				"ph_wtax": lambda adjustment=0: self.calculate_withholding_tax(adjustment),
+				"ph_wtax": lambda prorated=False, adjustment=0: self.calculate_withholding_tax(prorated, adjustment),
 				"ph_13th_month_pay": lambda: self.calculate_13th_month_pay(),
 				"ph_phic": lambda prorated=False: self.calculate_phic_for_period(prorated=prorated),
 				"ph_hdmf": lambda prorated=False: self.calculate_hdmf_for_period(prorated=prorated),
@@ -1721,6 +1732,7 @@ class CustomSalarySlip(TransactionBase):
 				"variable_based_on_taxable_salary",
 				"exempted_from_income_tax",
 				"is_basic_pay",                  # CUSTOM
+				"is_13th_month_pay_applicable",  # CUSTOM — required for calculate_13th_month_pay() SQL query
 			):
 				component_row.set(attr, component_data.get(attr))
 
@@ -2416,7 +2428,19 @@ class CustomSalarySlip(TransactionBase):
 		                 If found → I am the 2nd period
 		  2. Look AHEAD: find a slip starting on (self.end_date + 1 day)
 		                 If found → I am the 1st period
-		  3. Neither    → standalone (monthly / weekly / any non-paired payroll)
+		  3. Neither    → standalone
+
+		GUARD 1 — Monthly slips are always standalone:
+		  A slip longer than 16 days is never paired with an adjacent slip.
+		  Without this: April 1–30 (monthly) looks BACK, finds March 1–31 (monthly),
+		  and incorrectly treats itself as the 2nd period of a March–April pair.
+
+		GUARD 2 — No chaining across payroll cycles:
+		  When looking BACK, only pair with a slip that has NO slip behind it.
+		  If the candidate prev_slip is itself a 2nd period (has its own paired slip),
+		  skip it — it belongs to the previous cycle.
+		  Without this: April 1–15 (new cycle) looks BACK, finds March 16–31
+		  (2nd period of March cycle), and chains into it incorrectly.
 
 		Returns frappe._dict:
 		  has_pair      bool   — True if a paired slip exists
@@ -2424,12 +2448,22 @@ class CustomSalarySlip(TransactionBase):
 		  paired_name   str    — name of paired slip, or None
 		  paired_gross  float  — gross_pay of paired slip, or 0.0
 
-		Works for ANY cutoff pattern:
+		Works for ANY bimonthly cutoff pattern:
 		  Standard   : Oct  1–15  /  Oct 16–31
 		  Split      : Oct  5–20  /  Oct 21–Nov 4
 		  Cross-month: Dec 26–Jan 9  /  Jan 10–Jan 24
-		  Weekly/any : any two adjacent slips
 		"""
+		period_days = date_diff(self.end_date, self.start_date) + 1
+
+		# ── GUARD 1: Monthly / long-period slips are ALWAYS standalone ───────────
+		if period_days > 16:
+			return frappe._dict(
+				has_pair=False,
+				is_first=False,
+				paired_name=None,
+				paired_gross=0.0,
+			)
+
 		day_before = add_days(self.start_date, -1)
 		day_after  = add_days(self.end_date,    1)
 
@@ -2442,17 +2476,34 @@ class CustomSalarySlip(TransactionBase):
 				"docstatus": ("!=", 2),
 				"name":      ("!=", self.name),
 			},
-			["name", "gross_pay"],
+			["name", "gross_pay", "start_date"],
 			order_by="docstatus desc",
 			as_dict=True,
 		)
 		if prev_slip:
-			return frappe._dict(
-				has_pair=True,
-				is_first=False,
-				paired_name=prev_slip.name,
-				paired_gross=flt(prev_slip.gross_pay or 0),
+			# ── GUARD 2: Don't chain into a slip that is itself a 2nd period ─────
+			# If prev_slip has its own paired slip behind it, it's a 2nd period of
+			# a previous cycle. Skip it to avoid cross-cycle chaining.
+			# Example: April 1–15 must NOT pair with March 16–31 (March's 2nd period).
+			prev_prev = frappe.db.get_value(
+				"Salary Slip",
+				{
+					"employee":  self.employee,
+					"end_date":  add_days(prev_slip.start_date, -1),
+					"docstatus": ("!=", 2),
+					"name":      ("!=", self.name),
+				},
+				"name",
 			)
+			if not prev_prev:
+				# prev_slip has nothing behind it — it is a 1st period, safe to pair
+				return frappe._dict(
+					has_pair=True,
+					is_first=False,
+					paired_name=prev_slip.name,
+					paired_gross=flt(prev_slip.gross_pay or 0),
+				)
+			# prev_slip is already a 2nd period — fall through to Look AHEAD
 
 		# Look AHEAD — is there a slip that starts the day after I end?
 		next_slip = frappe.db.get_value(
@@ -2475,25 +2526,19 @@ class CustomSalarySlip(TransactionBase):
 				paired_gross=flt(next_slip.gross_pay or 0),
 			)
 
-		# No adjacent slip found
-		period_days = date_diff(self.end_date, self.start_date) + 1
-
+		# No adjacent slip found — standalone or unconfirmed 1st period
 		if period_days <= 16:
-			# Short period with no adjacent slip = potential 1st period whose 2nd
-			# slip hasn't been created yet (payroll is always run 1st period first).
-			# Treat as is_first=True so:
-			#   non-prorated → returns 0 (full amount will be charged on 2nd period)
-			#   prorated     → returns half estimate
-			# When the 2nd period slip is created later, it will find this slip
-			# via Look BACK and correctly compute the combined monthly amount.
+			# Short period with no adjacent slip = 1st period whose 2nd hasn't been
+			# created yet. Treat as is_first=True so non-prorated returns ₱0 and
+			# prorated returns the half estimate. The 2nd period will find this slip
+			# via Look BACK when it is created.
 			return frappe._dict(
-				has_pair=False,   # no confirmed pair yet in DB
-				is_first=True,    # behave as 1st period
+				has_pair=False,
+				is_first=True,
 				paired_name=None,
 				paired_gross=0.0,
 			)
 
-		# Long period (>16 days) with no adjacent slip — standalone payroll
 		return frappe._dict(
 			has_pair=False,
 			is_first=False,
@@ -2565,25 +2610,25 @@ class CustomSalarySlip(TransactionBase):
 	def _get_full_monthly_sss(self, contribution_type):
 		"""
 		Look up the full monthly SSS contribution from the SSS Contribution table.
-
+ 
 		SSS bracket is ALWAYS based on monthly gross pay — not assignment.base.
 		BIR/SSS rules use the employee's total gross monthly compensation
 		(including allowances, OT, etc.) for the Monthly Salary Credit lookup,
 		regardless of whether the employee is paid on a monthly, daily, or hourly rate.
-
+ 
 		Monthly gross used for bracket lookup (all rate types):
 		  Non-bimonthly → self.gross_pay  (already the full month)
 		  Bimonthly 1st → self.gross_pay × 2  (estimate — 2nd period not yet known;
 		                  error self-corrects on the 2nd period remainder calc)
 		  Bimonthly 2nd → self.gross_pay + 1st-period gross_pay from Salary Slip header
-
+ 
 		Returns 0 if no SSS Contribution table is found for the period.
 		"""
 		date = self.end_date
 		pos = self._detect_period_position()
 		current_gross = flt(self.gross_pay or 0)
 		period_days = date_diff(self.end_date, self.start_date) + 1
-
+ 
 		if not pos.has_pair:
 			if pos.is_first:
 				# Short period, 2nd slip not yet created — estimate monthly as ×2
@@ -2597,7 +2642,7 @@ class CustomSalarySlip(TransactionBase):
 		else:
 			# 2nd period: use actual 1st-period gross from paired slip
 			monthly_pay = current_gross + pos.paired_gross
-
+ 
 		frappe.msgprint(
 			f"<b>SSS — Monthly Gross for Bracket Lookup</b><br>"
 			f"Period: {self.start_date} → {self.end_date} ({period_days} days)<br>"
@@ -2610,7 +2655,7 @@ class CustomSalarySlip(TransactionBase):
 			   if pos.has_pair and pos.is_first else ""),
 			title="SSS — Monthly Pay",
 		)
-
+ 
 		# Table lookup
 		contribution_table = frappe.get_list(
 			"SSS Contribution",
@@ -2622,7 +2667,7 @@ class CustomSalarySlip(TransactionBase):
 		if not contribution_table:
 			frappe.msgprint("No SSS Contribution table found.", title="SSS — ERROR")
 			return 0.0
-
+ 
 		doc = frappe.get_doc("SSS Contribution", contribution_table[0])
 		for row in doc.contribution_table:
 			if row.from_amount <= monthly_pay and (not row.to_amount or monthly_pay <= row.to_amount):
@@ -2634,30 +2679,30 @@ class CustomSalarySlip(TransactionBase):
 					amount = flt(row.employee_compensation or 0)
 				else:
 					amount = 0.0
-
+ 
 				frappe.msgprint(
 					f"SSS table match: ₱{row.from_amount:,.2f}–₱{row.to_amount or '∞':,} | "
 					f"{contribution_type} = <b>₱{amount:,.2f}</b>",
 					title="SSS — Table Match",
 				)
 				return amount
-
+ 
 		return 0.0
-
+ 
 	def calculate_sss_for_period(self, contribution_type, prorated=False, salary_component=None):
 		"""
 		Returns the SSS deduction for this payroll period.
-
+ 
 		prorated=False  NON-PRORATED:
 		  Bimonthly 1st  → ₱0
 		  Bimonthly 2nd  → full monthly SSS from table
 		  Non-bimonthly  → full monthly SSS from table
-
+ 
 		prorated=True   PRORATED:
 		  Bimonthly 1st  → full_monthly_sss / 2
 		  Bimonthly 2nd  → full_monthly_sss − actual_1st_period_sss_from_db
 		  Non-bimonthly  → full monthly SSS (same either way)
-
+ 
 		salary_component — the Salary Detail component name used to look up the 1st-period
 		  deduction for the prorated 2nd-half remainder calculation. Defaults:
 		    employee_contribution  → "PH - SSS Contribution"
@@ -2665,7 +2710,7 @@ class CustomSalarySlip(TransactionBase):
 		    employee_compensation  → "PH - SSS EC"
 		  Override if your component has a different name:
 		    ph_sss(prorated=True, salary_component="My SSS EE Component")
-
+ 
 		SALARY STRUCTURE SETUP:
 		  ph_sss()                  → EE non-prorated  (0 on 1st, full on 2nd)
 		  ph_sss(prorated=True)     → EE prorated      (half on 1st, remainder on 2nd)
@@ -2678,14 +2723,14 @@ class CustomSalarySlip(TransactionBase):
 		"""
 		_default_component_names = {
 			"employee_contribution": "PH - SSS Contribution",
-			"employer_contribution": "PH - SSS ER Contribution",
-			"employee_compensation": "PH - SSS EC",
+			"employer_contribution": "PH - SSS Employer Contribution",   # matches install.py
+			"employee_compensation": "PH - SSS Employee Compensation",   # matches install.py
 		}
-
+ 
 		period_days = date_diff(self.end_date, self.start_date) + 1
 		pos = self._detect_period_position()
 		mode = "Prorated" if prorated else "Non-Prorated"
-
+ 
 		frappe.msgprint(
 			f"<b>SSS DEBUG — calculate_sss_for_period</b><br>"
 			f"Slip: {self.name or '(unsaved)'}<br>"
@@ -2694,9 +2739,9 @@ class CustomSalarySlip(TransactionBase):
 			f"Mode: <b>{mode}</b> | contribution_type: {contribution_type}",
 			title="SSS Entry Point",
 		)
-
+ 
 		full_monthly_sss = self._get_full_monthly_sss(contribution_type)
-
+ 
 		# ── Standalone (truly no paired period) ─────────────────────────────────
 		if not pos.has_pair and not pos.is_first:
 			frappe.msgprint(
@@ -2704,7 +2749,7 @@ class CustomSalarySlip(TransactionBase):
 				title="SSS — Standalone",
 			)
 			return full_monthly_sss
-
+ 
 		# ── 1st period ───────────────────────────────────────────────────────────
 		if pos.is_first:
 			if not prorated:
@@ -2713,7 +2758,7 @@ class CustomSalarySlip(TransactionBase):
 					title="SSS — 1st Period (Non-Prorated)",
 				)
 				return 0.0
-
+ 
 			sss_1st = flt(full_monthly_sss / 2, 2)
 			frappe.msgprint(
 				f"1st period | Prorated → full / 2<br>"
@@ -2722,7 +2767,7 @@ class CustomSalarySlip(TransactionBase):
 				title="SSS — 1st Period (Prorated)",
 			)
 			return sss_1st
-
+ 
 		# ── 2nd period ───────────────────────────────────────────────────────────
 		if not prorated:
 			frappe.msgprint(
@@ -2730,10 +2775,10 @@ class CustomSalarySlip(TransactionBase):
 				title="SSS — 2nd Period (Non-Prorated)",
 			)
 			return full_monthly_sss
-
+ 
 		# Prorated 2nd half: remainder = full − what was actually deducted in 1st period
 		component_name = salary_component or _default_component_names.get(contribution_type, "")
-
+ 
 		first_sss = 0.0
 		if pos.paired_name:
 			first_sss_result = frappe.db.sql(
@@ -2741,15 +2786,15 @@ class CustomSalarySlip(TransactionBase):
 				SELECT COALESCE(SUM(sd.amount), 0)
 				FROM `tabSalary Detail` sd
 				WHERE sd.parent           = %s
-				  AND sd.parentfield      = 'deductions'
+				  AND sd.parentfield      IN ('deductions', 'statistical_deductions')
 				  AND sd.salary_component = %s
 				""",
 				(pos.paired_name, component_name),
 			)
 			first_sss = flt(first_sss_result[0][0]) if first_sss_result else 0.0
-
+ 
 		second_period_sss = max(flt(full_monthly_sss - first_sss, 2), 0.0)
-
+ 
 		frappe.msgprint(
 			f"Bimonthly 2nd half | Prorated → remainder<br>"
 			f"Full monthly SSS: ₱{full_monthly_sss:,.2f}<br>"
@@ -2760,8 +2805,19 @@ class CustomSalarySlip(TransactionBase):
 			   if first_sss == 0 else ""),
 			title="SSS — 2nd Half (Prorated)",
 		)
-
+ 
 		return second_period_sss
+ 
+	# kept for backwards compatibility — delegates to calculate_sss_for_period
+	def calculate_employee_sss_contribution(self, pay, date, contribution_type):
+		return self._get_full_monthly_sss(contribution_type)
+ 
+	def _get_first_period_pay(self, current_period_pay):
+		"""Deprecated — kept for safety. SSS now uses _get_paired_period_slip directly."""
+		result = self._get_paired_period_slip(["gross_pay", "basic_pay"])
+		if not result:
+			return 0
+		return flt(result.get("basic_pay") or 0)
 
 	# kept for backwards compatibility — delegates to calculate_sss_for_period
 	def calculate_employee_sss_contribution(self, pay, date, contribution_type):
@@ -2774,123 +2830,207 @@ class CustomSalarySlip(TransactionBase):
 			return 0
 		return flt(result.get("basic_pay") or 0)
 
-	def calculate_withholding_tax(self, adjustment=0):
+	def calculate_withholding_tax(self, prorated=False, adjustment=0):
 		"""
-		Withholding tax calculation for PH payroll.
+		Dynamic Withholding Tax for PH Payroll.
 
-		- Returns 0 during simulation or when slip has no name
-		- 1st period (start day < 16): return 0
-		- 2nd period: combine both periods' gross from DB, subtract full-month deductions
-		- Non-bimonthly: use current gross only
+		USAGE (salary structure formula):
+		  ph_wtax()          → Non-prorated: ₱0 on 1st period, full cumulative tax on 2nd
+		  ph_wtax(True)      → Prorated: estimated tax on 1st period, true-up on 2nd
+
+		CASE A — 1st period / intermediate:
+		  Non-prorated → ₱0 immediately
+		  Prorated     → (gross − exempt_deductions) × factor → slab → ÷ factor
+
+		CASE B — 2nd / final period:
+		  Cumulative reconstruction: all prior slips in payroll period
+		  taxable = cumulative_gross − cumulative_exempt_deductions
+		  tax_due = slab(taxable) − prior_tax_paid
+
+		EXEMPT DEDUCTIONS:
+		  Read directly from Salary Component master (exempted_from_income_tax = 1).
+		  SSS / PHIC / HDMF must have this flag checked in install.py.
+
+		PRIOR TAX LOOKUP:
+		  Uses variable_based_on_taxable_salary = 1 on Salary Component master (standard field).
+		  PH - Withholding Tax must have this flag checked in install.py.
+
+		SLAB CALCULATION:
+		  BIR standard format: fixed_amount + (excess over from_amount × rate)
+		  PH Withholding Tax Table slabs must have fixed_amount field populated.
 		"""
-		# Skip during simulation — simulate_component creates a throwaway slip
-		# with no name which breaks bimonthly detection
 		if not self.name or getattr(self.flags, "_is_simulation", False):
 			return 0
 
 		if not hasattr(self, "_salary_structure_assignment"):
 			self.set_salary_structure_assignment()
 
-		period_days = date_diff(self.end_date, self.start_date) + 1
 		pos = self._detect_period_position()
+		gross_current = flt(self.gross_pay or 0)
 
-		frappe.msgprint(
-			f"<b>WTAX DEBUG - Start</b><br>"
-			f"Slip: {self.name}<br>"
-			f"Start: {self.start_date} | End: {self.end_date}<br>"
-			f"Period days: {period_days}<br>"
-			f"has_pair={pos.has_pair} | is_first={pos.is_first} | paired={pos.paired_name}",
-			title="WTAX Step 1 - Period Detection"
-		)
+		freq = (self.payroll_frequency or "").strip().lower().replace("-", "").replace(" ", "")
+		if freq in ["semimonthly", "bimonthly"]:
+			factor = 2.0
+		elif freq == "weekly":
+			factor = 4.3333
+		else:
+			factor = 1.0
 
-		# 1st period — no withholding, collected on 2nd period
+		# Cache Salary Component flags to avoid repeated DB hits inside loops
+		_comp_flag_cache = {}
+
+		def get_comp_flags(salary_component):
+			if salary_component not in _comp_flag_cache:
+				_comp_flag_cache[salary_component] = frappe.db.get_value(
+					"Salary Component",
+					salary_component,
+					["variable_based_on_taxable_salary", "exempted_from_income_tax"],
+					as_dict=True,
+				) or frappe._dict()
+			return _comp_flag_cache[salary_component]
+
+		# ── CASE A: 1st period / intermediate ────────────────────────────────
 		if pos.is_first:
-			frappe.msgprint(
-				"Returning 0 — this is the 1st period of a paired payroll.",
-				title="WTAX Step 1 - Skipped (1st Period)"
+			if not prorated:
+				return 0.0
+
+			# Subtract active exempt deductions (SSS/PHIC/HDMF if prorated on 1st period)
+			# Read from Salary Component master — more reliable than Salary Detail row flag
+			current_cutoff_exemptions = sum(
+				flt(d.amount)
+				for d in self.deductions
+				if get_comp_flags(d.salary_component).get("exempted_from_income_tax")
 			)
-			return 0
 
-		non_taxable_components = [
-			"PH - SSS Contribution",
-			"PH - PHIC Contribution",
-			"PH - HDMF Contribution",
-		]
+			taxable_base_1st = gross_current - current_cutoff_exemptions
+			projected_monthly_taxable = taxable_base_1st * factor
+			projected_monthly_tax = self._execute_slab_calculation_from_db(projected_monthly_taxable)
+			final_period_tax = projected_monthly_tax / factor
 
-		# Start with this period's gross
-		gross_2nd = flt(self.gross_pay or 0)
-		taxable_pay = gross_2nd
+			frappe.msgprint(
+				f"<b>WTAX — Case A (1st period, prorated)</b><br>"
+				f"Gross: ₱{gross_current:,.2f}<br>"
+				f"Exempt deductions: ₱{current_cutoff_exemptions:,.2f}<br>"
+				f"Taxable base: ₱{taxable_base_1st:,.2f}<br>"
+				f"Projected monthly (×{factor}): ₱{projected_monthly_taxable:,.2f}<br>"
+				f"Monthly tax: ₱{projected_monthly_tax:,.2f}<br>"
+				f"<b>1st period tax (÷{factor}): ₱{flt(final_period_tax, 2):,.2f}</b>",
+				title="WTAX — Case A",
+			)
 
-		# Subtract this period's statutory deductions
-		deduction_lines = []
-		current_deductions = 0.0
-		for d in self.deductions or []:
-			if d.salary_component in non_taxable_components:
-				amt = flt(d.amount)
-				taxable_pay -= amt
-				current_deductions += amt
-				deduction_lines.append(f"&nbsp;&nbsp;- {d.salary_component}: ₱{amt:,.2f}")
+			return flt(final_period_tax, 2)
 
-		frappe.msgprint(
-			f"<b>2nd Period (Current Slip)</b><br>"
-			f"Gross Pay: ₱{gross_2nd:,.2f}<br>"
-			f"Statutory Deductions:<br>"
-			f"{'<br>'.join(deduction_lines) or '&nbsp;&nbsp;None'}<br>"
-			f"Total Deducted: ₱{current_deductions:,.2f}<br>"
-			f"Subtotal after deductions: ₱{taxable_pay:,.2f}",
-			title="WTAX Step 2 - 2nd Period Gross"
+		# ── CASE B: 2nd / final period ───────────────────────────────────────
+
+		# Identify WTAX salary components from the current salary structure
+		# by checking which deduction formulas call ph_wtax — no custom field needed.
+		wtax_components = set()
+		if getattr(self, "_salary_structure_doc", None):
+			for row in self._salary_structure_doc.get("deductions"):
+				if "ph_wtax" in (row.formula or ""):
+					wtax_components.add(row.salary_component)
+
+		# Current period exempt deductions (from master)
+		current_exempt_deductions = sum(
+			flt(d.amount)
+			for d in self.deductions
+			if get_comp_flags(d.salary_component).get("exempted_from_income_tax")
 		)
 
-		# For paired 2nd period: fetch 1st period from DB
-		gross_1st = 0.0
-		first_deductions = 0.0
+		cumulative_gross = gross_current
+		cumulative_statutory_deductions = current_exempt_deductions
+		total_tax_paid_in_prior_periods = 0.0
 
-		if pos.has_pair and not pos.is_first:
-			first_half = self._get_first_half_taxable_data()
-			if first_half:
-				gross_1st = flt(first_half.get("gross_pay", 0))
-				sss_1st   = flt(first_half.get("sss_amount", 0))
-				phic_1st  = flt(first_half.get("phic_amount", 0))
-				hdmf_1st  = flt(first_half.get("hdmf_amount", 0))
-				first_deductions = sss_1st + phic_1st + hdmf_1st
+		# ── Strategy: use paired slip directly for bimonthly (no payroll_period needed)
+		# then supplement with payroll_period query for weekly/multi-period scenarios.
+		if pos.has_pair and pos.paired_name:
+			# Direct paired slip — works for any cutoff pattern, payroll_period not required
+			cumulative_gross += pos.paired_gross
 
-				taxable_pay += gross_1st
-				taxable_pay -= first_deductions
+			paired_details = frappe.get_all(
+				"Salary Detail",
+				filters={
+					"parent": pos.paired_name,
+					"parentfield": "deductions",
+				},
+				fields=["salary_component", "amount"],
+			)
 
-				frappe.msgprint(
-					f"<b>1st Period (Previous Slip)</b><br>"
-					f"Gross Pay: ₱{gross_1st:,.2f}<br>"
-					f"Statutory Deductions:<br>"
-					f"&nbsp;&nbsp;- PH - SSS Contribution: ₱{sss_1st:,.2f}<br>"
-					f"&nbsp;&nbsp;- PH - PHIC Contribution: ₱{phic_1st:,.2f}<br>"
-					f"&nbsp;&nbsp;- PH - HDMF Contribution: ₱{hdmf_1st:,.2f}<br>"
-					f"Total Deducted: ₱{first_deductions:,.2f}<br>"
-					f"Subtotal after deductions: ₱{gross_1st - first_deductions:,.2f}",
-					title="WTAX Step 3 - 1st Period Gross"
+			for row in paired_details:
+				flags = get_comp_flags(row.salary_component)
+				if row.salary_component in wtax_components:
+					total_tax_paid_in_prior_periods += flt(row.amount or 0)
+				if flags.get("exempted_from_income_tax"):
+					cumulative_statutory_deductions += flt(row.amount or 0)
+
+		elif self.payroll_period:
+			# Fallback: payroll_period-based sweep for weekly or standalone scenarios
+			prior_slips = frappe.get_all(
+				"Salary Slip",
+				filters={
+					"employee": self.employee,
+					"docstatus": ("!=", 2),
+					"payroll_period": self.payroll_period.name,
+					"start_date": [">=", self.payroll_period.start_date],
+					"end_date": ["<", self.start_date],
+				},
+				fields=["name", "gross_pay"],
+			)
+
+			for slip in prior_slips:
+				cumulative_gross += flt(slip.gross_pay or 0)
+
+				prior_details = frappe.get_all(
+					"Salary Detail",
+					filters={"parent": slip.name, "parentfield": "deductions"},
+					fields=["salary_component", "amount"],
 				)
-			else:
-				frappe.msgprint(
-					f"<b>WARNING:</b> No 1st period slip found for employee {self.employee}.<br>"
-					f"Using only current period gross. Tax may be under-withheld.",
-					title="WTAX Step 3 - 1st Period NOT FOUND"
-				)
 
-		total_gross = gross_1st + gross_2nd
-		total_deductions = current_deductions + first_deductions
+				for row in prior_details:
+					flags = get_comp_flags(row.salary_component)
+					if row.salary_component in wtax_components:
+						total_tax_paid_in_prior_periods += flt(row.amount or 0)
+					if flags.get("exempted_from_income_tax"):
+						cumulative_statutory_deductions += flt(row.amount or 0)
+
+		taxable_pay_monthly = cumulative_gross - cumulative_statutory_deductions
+		total_monthly_tax_due = self._execute_slab_calculation_from_db(taxable_pay_monthly)
+		final_last_period_tax = total_monthly_tax_due - total_tax_paid_in_prior_periods
 
 		frappe.msgprint(
-			f"<b>Combined Monthly Summary</b><br><br>"
-			f"1st Period Gross:&nbsp;&nbsp;&nbsp;&nbsp;₱{gross_1st:,.2f}<br>"
-			f"2nd Period Gross:&nbsp;&nbsp;&nbsp;&nbsp;₱{gross_2nd:,.2f}<br>"
-			f"<b>Total Gross:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;₱{total_gross:,.2f}</b><br><br>"
-			f"Total Deductions:&nbsp;&nbsp;&nbsp;₱{total_deductions:,.2f}<br>"
-			f"<b>Taxable Pay:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;₱{taxable_pay:,.2f}</b>",
-			title="WTAX Step 4 - Combined Monthly Totals"
+			f"<b>WTAX — Case B (2nd period)</b><br>"
+			f"Paired slip: {pos.paired_name or 'none (payroll_period fallback)'}<br>"
+			f"Cumulative gross: ₱{cumulative_gross:,.2f}<br>"
+			f"Cumulative exempt deductions: ₱{cumulative_statutory_deductions:,.2f}<br>"
+			f"Taxable monthly: ₱{taxable_pay_monthly:,.2f}<br>"
+			f"Total monthly tax due: ₱{total_monthly_tax_due:,.2f}<br>"
+			f"Prior tax paid: ₱{total_tax_paid_in_prior_periods:,.2f}<br>"
+			f"<b>2nd period tax: ₱{flt(final_last_period_tax, 2):,.2f}</b>",
+			title="WTAX — Case B",
 		)
 
-		taxable_pay = max(flt(taxable_pay) + flt(adjustment), 0)
+		return max(flt(final_last_period_tax) + flt(adjustment), 0.0)
 
-		# Fetch tax table
+	def _execute_slab_calculation_from_db(self, taxable_amount):
+		"""
+		BIR standard slab calculation.
+
+		Formula per bracket:
+		  tax = fixed_amount + (taxable_amount − from_amount) × (percent_withheld / 100)
+
+		Requires PH Withholding Tax Table slab rows to have:
+		  from_amount      → lower bound (Over column)
+		  to_amount        → upper bound (But not over column), blank for last bracket
+		  percent_withheld → marginal rate for this bracket
+		  fixed_amount     → cumulative tax at the lower bound of this bracket
+
+		2025 TRAIN Law Monthly example:
+		  Bracket 2: from=₱20,833  to=₱33,333  rate=15%  fixed=₱0
+		  Bracket 3: from=₱33,333  to=₱66,667  rate=20%  fixed=₱1,875
+		"""
+		if taxable_amount <= 0:
+			return 0.0
+
 		date = self.posting_date or self.end_date
 		table_list = frappe.get_list(
 			"PH Withholding Tax Table",
@@ -2898,45 +3038,31 @@ class CustomSalarySlip(TransactionBase):
 			order_by="effective_date desc",
 			limit=1,
 		)
-
 		if not table_list:
-			frappe.msgprint("No PH Withholding Tax Table found.", title="WTAX Step 5 - ERROR")
-			return 0
+			frappe.msgprint("No PH Withholding Tax Table found.", title="WTAX — ERROR")
+			return 0.0
 
 		table = frappe.get_doc("PH Withholding Tax Table", table_list[0])
+		slabs = sorted(table.slabs, key=lambda x: flt(x.from_amount))
 
-		# Apply progressive slabs
-		total_tax = 0.0
-		prev_to = 0.0
-		slab_lines = []
+		matched_row = None
+		for row in slabs:
+			if taxable_amount >= flt(row.from_amount):
+				if not row.to_amount or taxable_amount <= flt(row.to_amount):
+					matched_row = row
+					break
 
-		for row in sorted(table.slabs, key=lambda x: flt(x.from_amount)):
-			if taxable_pay <= prev_to:
-				break
+		# Fallback to highest bracket if none matched (income above all defined ceilings)
+		if not matched_row and slabs:
+			matched_row = slabs[-1]
 
-			bracket_start = max(prev_to, flt(row.from_amount))
-			bracket_end = flt(row.to_amount) or float("inf")
+		if not matched_row:
+			return 0.0
 
-			if taxable_pay > bracket_start:
-				bracket_amount = min(taxable_pay, bracket_end) - bracket_start
-				tax_this = bracket_amount * (row.percent_withheld / 100)
-				total_tax += tax_this
-
-				bracket_end_display = f"₱{bracket_end:,.2f}" if bracket_end != float("inf") else "above"
-				slab_lines.append(
-					f"&nbsp;&nbsp;Slab {row.idx}: ₱{bracket_start:,.2f} – {bracket_end_display} "
-					f"| {row.percent_withheld}% × ₱{bracket_amount:,.2f} = ₱{tax_this:,.2f}"
-				)
-
-			prev_to = bracket_end
-
-		frappe.msgprint(
-			f"<b>Tax Slab Calculation</b><br><br>"
-			f"Taxable Pay: ₱{taxable_pay:,.2f}<br><br>"
-			f"{'<br>'.join(slab_lines) or 'No tax — within 0% bracket'}<br><br>"
-			f"<b>Total Withholding Tax: ₱{flt(total_tax, 2):,.2f}</b>",
-			title="WTAX Step 5 - Slab Breakdown & Final Result"
-		)
+		fixed_tax = flt(getattr(matched_row, "fixed_amount", 0))
+		excess = max(taxable_amount - flt(matched_row.from_amount), 0.0)
+		rate = flt(matched_row.percent_withheld or 0) / 100.0
+		total_tax = fixed_tax + (excess * rate)
 
 		return flt(total_tax, 2)
 
@@ -3432,6 +3558,202 @@ class CustomSalarySlip(TransactionBase):
 
 		return flt(gross / 12)
 
+	def calculate_overtime(self):
+		"""
+		V2 Attendance-Based Overtime — Structure-Gated.
+
+		PHASE 1 — GUARDRAIL (presence check):
+		  Before any math runs, the engine checks whether the target OT salary
+		  component exists as a row in the active Salary Structure.
+		  If it is MISSING → the engine stops immediately. Nothing is calculated,
+		  nothing is appended, no error is raised.
+		  If it IS present → proceed to Phase 2.
+
+		  This means the Salary Structure is the single master switch.
+		  Add "PH - OT" to the structure → OT is calculated.
+		  Remove it → OT is completely disabled for that employee / grade.
+
+		PHASE 2 — CALCULATION:
+		  Sweeps submitted Attendance records in the slip date range.
+		  Reads the overtime_details child table on each Attendance record.
+		  Multiple overtime types map to the same Salary Component bucket:
+
+		    March 1 | DVA Overtime (125%)          → PH - OT  ₱239.63
+		    March 2 | DVA Overtime (125%)          → PH - OT  ₱239.63
+		    March 7 | DVA Rest Day Premium (130%)  → PH - OT  ₱249.21
+		    March 7 | Special Holiday OT (169%)   → PH - OT  ₱323.97
+		    ──────────────────────────────────────────────────────────
+		    PH - OT total                          → ₱1,052.44
+
+		PHASE 3 — UPDATE (not inject):
+		  Finds the existing earning row (added by calculate_component_amounts with
+		  amount = 0) and sets its amount to the computed total.
+		  Flags (is_basic_pay, is_13th_month_pay_applicable, is_tax_applicable, etc.)
+		  are read from the Salary Structure row — NOT hardcoded here.
+		  This gives you full control per structure.
+
+		SALARY STRUCTURE ROW SETUP:
+		  Salary Component        : PH - OT (or any OT component)
+		  Amount                  : 0
+		  Amount Based on Formula : unchecked  (no formula needed)
+		  Depends on Payment Days : unchecked  (actual hours, not prorated)
+		  Remove if Zero Valued   : unchecked  ← REQUIRED — row must stay for Phase 3
+		  is_basic_pay            : your choice (usually unchecked for OT)
+		  is_13th_month_pay_applicable : your choice (DOLE includes OT in 13th month)
+
+		OVERTIME TYPES DOCTYPE:
+		  name             → must match overtime_details.overtime_type exactly
+		  salary_component → must exist as a row in the Salary Structure
+		  pay_rate         → multiplier as percentage (125 = 125% = 1.25×)
+
+		FORMULA: hourly_rate × hours × (pay_rate / 100)
+		  hourly_rate comes from calculate_salary_structure_rates() — works for
+		  all rate types (Hourly, Daily, Monthly, Yearly).
+
+		SIMULATION GUARD:
+		  Returns immediately if self.flags._is_simulation = True.
+
+		BIMONTHLY:
+		  No proration needed. OT is tied to specific attendance_dates which
+		  fall naturally within the cutoff's date range.
+		"""
+		if getattr(self.flags, "_is_simulation", False):
+			return
+
+		# ── Phase 1: Guardrail — verify OT component exists in Salary Structure ──
+		if not getattr(self, "_salary_structure_doc", None):
+			self.set_salary_structure_doc()
+
+		# Build map: salary_component → structure row (for flags)
+		all_ot_components = set(frappe.get_all("Overtime Types", pluck="salary_component"))
+		structure_ot_map = {
+			row.salary_component: row
+			for row in self._salary_structure_doc.get("earnings")
+			if row.salary_component in all_ot_components
+		}
+
+		if not structure_ot_map:
+			# No OT component in this Salary Structure — stop immediately
+			return
+
+		# ── Get hourly rate from SSA ─────────────────────────────────────────────
+		if not hasattr(self, "_salary_structure_assignment"):
+			self.set_salary_structure_assignment()
+
+		rates = self.calculate_salary_structure_rates(self._salary_structure_assignment)
+		hourly_rate = flt(rates.get("hourly_rate") or 0)
+
+		if not hourly_rate:
+			frappe.log_error(
+				title="OT Calc — No Hourly Rate",
+				message=(
+					f"Employee {self.employee} — no hourly_rate from assignment "
+					f"{self._salary_structure_assignment.name}. "
+					f"Check: base, rate_type, daily_hours, days_of_work_per_year."
+				),
+			)
+			return
+
+		# ── Phase 2: Sweep attendance → accumulate per salary_component ─────────
+		attendance_list = frappe.get_all(
+			"Attendance",
+			filters={
+				"employee":        self.employee,
+				"attendance_date": ["between", [self.start_date, self.end_date]],
+				"docstatus":       1,
+			},
+			pluck="name",
+		)
+
+		if not attendance_list:
+			return
+
+		# { salary_component: { amount, hours, lines[] } }
+		ot_buckets = {}
+
+		for att_name in attendance_list:
+			attendance = frappe.get_doc("Attendance", att_name)
+
+			if not attendance.get("overtime_details"):
+				continue
+
+			for row in attendance.overtime_details:
+				if not row.overtime_type or not flt(row.hours):
+					continue
+
+				ot_type = frappe.get_cached_doc("Overtime Types", row.overtime_type)
+				salary_component = ot_type.salary_component
+				pay_rate = flt(ot_type.pay_rate)
+
+				if not salary_component or not pay_rate:
+					continue
+
+				# Skip if this component is not in the structure (guardrail)
+				if salary_component not in structure_ot_map:
+					continue
+
+				amount = hourly_rate * flt(row.hours) * (pay_rate / 100.0)
+
+				if salary_component not in ot_buckets:
+					ot_buckets[salary_component] = {"amount": 0.0, "hours": 0.0, "lines": []}
+
+				ot_buckets[salary_component]["amount"] += amount
+				ot_buckets[salary_component]["hours"]  += flt(row.hours)
+				ot_buckets[salary_component]["lines"].append(
+					f"{attendance.attendance_date} | {row.overtime_type}: "
+					f"{flt(row.hours):.2f}h × ₱{hourly_rate:,.2f} × {pay_rate}% = ₱{amount:,.2f}"
+				)
+
+		if not ot_buckets:
+			return
+
+		# ── Phase 3: Update existing earning rows — flags from structure row ─────
+		for salary_component, data in ot_buckets.items():
+			total = flt(data["amount"], 2)
+			if not total:
+				continue
+
+			# Find the existing row placed by calculate_component_amounts
+			existing_row = next(
+				(e for e in self.earnings if e.salary_component == salary_component),
+				None,
+			)
+
+			if existing_row:
+				# Update in place — preserves all flags set on the structure row
+				existing_row.amount = total
+				existing_row.default_amount = total
+
+			else:
+				# Row was removed (e.g. remove_if_zero_valued was checked on the component).
+				# Re-append using flags from the Salary Structure row — not hardcoded.
+				struct_row = structure_ot_map[salary_component]
+				self.append("earnings", {
+					"salary_component":                        salary_component,
+					"abbr":                                    struct_row.abbr,
+					"amount":                                  total,
+					"default_amount":                          total,
+					"additional_amount":                       0.0,
+					"depends_on_payment_days":                 0,
+					"is_tax_applicable":                       cint(struct_row.is_tax_applicable),
+					"is_basic_pay":                            cint(struct_row.get("is_basic_pay", 0)),
+					"is_13th_month_pay_applicable":            cint(struct_row.get("is_13th_month_pay_applicable", 0)),
+					"do_not_include_in_total":                 cint(struct_row.do_not_include_in_total),
+					"statistical_component":                   cint(struct_row.statistical_component),
+					"deduct_full_tax_on_selected_payroll_date": cint(struct_row.deduct_full_tax_on_selected_payroll_date),
+				})
+
+			# Debug log
+			frappe.msgprint(
+				f"<b>OT — {salary_component}</b><br>"
+				f"Hourly rate (SSA): ₱{hourly_rate:,.2f}<br>"
+				f"Total hours: {data['hours']:.2f}h<br><br>"
+				f"<b>Breakdown:</b><br>"
+				+ "<br>".join(f"&nbsp;&nbsp;{line}" for line in data["lines"])
+				+ f"<br><br><b>Component total: ₱{total:,.2f}</b>",
+				title=f"OT — {salary_component}",
+			)
+
 
 # -----------------------------------------------------------------------
 # Module-level helpers
@@ -3465,11 +3787,13 @@ def get_salary_component_data(component):
 			"depends_on_payment_days",
 			"salary_component_abbr as abbr",
 			"do_not_include_in_total",
-			"do_not_include_in_accounts",  # CUSTOM
+			"do_not_include_in_accounts",       # CUSTOM
 			"is_tax_applicable",
 			"is_flexible_benefit",
 			"variable_based_on_taxable_salary",
-			"accrual_component",            # CUSTOM
+			"accrual_component",                # CUSTOM
+			"is_basic_pay",                     # CUSTOM — needed for PHIC basis
+			"is_13th_month_pay_applicable",     # CUSTOM — needed for 13th month SQL query
 		),
 		as_dict=1,
 		cache=True,

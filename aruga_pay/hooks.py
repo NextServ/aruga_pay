@@ -38,8 +38,11 @@ override_doctype_class = {
 doctype_js = {
     "Salary Structure": "public/js/salary_structure.js",
     "Salary Structure Assignment": "public/js/salary_structure_assignment.js",
+    "Attendance": "public/js/attendance_list.js",
 }
-
+doctype_list_js = {
+    "Attendance": ["public/js/attendance.js"]
+}
 
 # Apps
 # ------------------
