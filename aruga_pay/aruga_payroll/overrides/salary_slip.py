@@ -1726,7 +1726,6 @@ class CustomSalarySlip(TransactionBase):
 				"abbr",
 				"do_not_include_in_total",
 				"do_not_include_in_accounts",   # CUSTOM
-				"accrual_component",             # CUSTOM
 				"is_tax_applicable",
 				"is_flexible_benefit",
 				"variable_based_on_taxable_salary",
@@ -1767,7 +1766,7 @@ class CustomSalarySlip(TransactionBase):
 			additional_salary
 			and additional_salary.get("ref_doctype")
 			in ["Arrear", "Payroll Correction", "Employee Benefit Claim"]
-		) or component_row.get("accrual_component")
+		)
 
 		if not skip_payment_days_adjustment:
 			self.update_component_amount_based_on_payment_days(component_row, remove_if_zero_valued)
@@ -3791,7 +3790,6 @@ def get_salary_component_data(component):
 			"is_tax_applicable",
 			"is_flexible_benefit",
 			"variable_based_on_taxable_salary",
-			"accrual_component",                # CUSTOM
 			"is_basic_pay",                     # CUSTOM — needed for PHIC basis
 			"is_13th_month_pay_applicable",     # CUSTOM — needed for 13th month SQL query
 		),
