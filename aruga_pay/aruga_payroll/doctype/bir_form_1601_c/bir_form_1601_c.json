@@ -136,15 +136,6 @@
       "read_only": 1
     },
     {
-      "fieldname": "amended_from",
-      "fieldtype": "Currency",
-      "label": "Amended From",
-      "no_copy": 1,
-      "options": "BIR Form 1601-C",
-      "print_hide": 1,
-      "read_only": 1
-    },
-    {
       "fieldname": "part1_section",
       "fieldtype": "Section Break",
       "label": "Part I"
