@@ -1,5 +1,6 @@
 {
  "actions": [],
+ "allow_import": 1,
  "allow_rename": 1,
  "autoname": "field:overtime_type",
  "creation": "2026-05-15 11:33:13.982851",
@@ -9,7 +10,8 @@
   "overtime_type",
   "salary_component",
   "pay_rate",
-  "description"
+  "description",
+  "activity_type"
  ],
  "fields": [
   {
@@ -35,12 +37,18 @@
    "fieldtype": "Link",
    "label": "Salary Component",
    "options": "Salary Component"
+  },
+  {
+   "fieldname": "activity_type",
+   "fieldtype": "Link",
+   "label": "Activity Type",
+   "options": "Activity Type"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-05-15 17:52:54.766320",
+ "modified": "2026-06-16 09:31:29.038474",
  "modified_by": "Administrator",
  "module": "Aruga Payroll",
  "name": "Overtime Types",
