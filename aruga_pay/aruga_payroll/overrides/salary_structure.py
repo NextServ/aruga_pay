@@ -43,7 +43,7 @@ class CustomSalaryStructure(SalaryStructure):
                 component_data = frappe.db.get_value(
                     "Salary Component",
                     cstr(row.salary_component),
-                    CUSTOM_OVERWRITTEN_FIELDS,
+                    tuple(CUSTOM_OVERWRITTEN_FIELDS),
                     as_dict=True,
                     cache=True,
                 )
